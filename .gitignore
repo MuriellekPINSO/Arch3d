@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# rendus du pod RunPod
+scripts/runpod/sorties/
+
+# cache de langue de Tesseract (tests OCR en local)
+*.traineddata

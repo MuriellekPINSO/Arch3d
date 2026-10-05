@@ -1,7 +1,5 @@
+import AppLoader from "@/components/AppLoader";
+
 export default function Home() {
-  return (
-    <main>
-      <div>Hello world!</div>
-    </main>
-  );
+  return <AppLoader />;
 }
