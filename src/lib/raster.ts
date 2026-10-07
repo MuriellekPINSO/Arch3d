@@ -1,6 +1,6 @@
 import type { Opening, OpeningKind, Pt, Room, Wall } from "./types";
 import { OPENING_DEFAULTS, uid } from "./types";
-import { joinWalls } from "./linework";
+import { closeOpenEnds, joinWalls } from "./linework";
 import { pointInPolygon, pointSegDist } from "./geometry";
 
 /* Lecture d'un plan en image (PNG, JPG, page de PDF) — sans IA.
@@ -235,16 +235,23 @@ export function readPlanImage(
 ): (RasterResult & { raster: PlanRaster; stairs: { x: number; y: number; w: number; d: number; rot: number }[] }) | null {
   const raster = new PlanRaster(img, 40);
   const { W, H, ink } = raster;
-  const R = Math.max(4, Math.round(Math.max(W, H) / 200)); // bouche les hachures (≈ 8 px sur 1600 px)
-  const maskH = close1D(ink, W, H, R, 0);
-  const maskV = close1D(ink, W, H, R, 1);
-
-  // 1er passage large pour trouver l'épaisseur des murs, 2e passage resserré autour
-  const loose = [...bands(maskH, W, H, true, 5, 80), ...bands(maskV, W, H, false, 5, 80)].filter((b) =>
-    hasEdges(b, ink, W, H),
-  );
-  const t = dominantThickness(loose);
-  if (!t) return null;
+  // on bouche les hachures le long de chaque direction. Leur espacement varie selon le dessin (traits serrés,
+  // ou paquets de traits espacés de 30 px) : on essaie plusieurs rayons et on garde le plus petit qui fait
+  // apparaître les murs (la plus grande longueur de bandes à l'épaisseur dominante)
+  const base = Math.max(4, Math.round(Math.max(W, H) / 200)); // ≈ 8 px sur 1600 px
+  let pick: { maskH: Uint8Array; maskV: Uint8Array; t: number; score: number } | null = null;
+  for (const R of [base, Math.round(base * 1.5), base * 2, base * 3]) {
+    const mH = close1D(ink, W, H, R, 0);
+    const mV = close1D(ink, W, H, R, 1);
+    // 1er passage large pour trouver l'épaisseur des murs, 2e passage resserré autour (plus bas)
+    const loose = [...bands(mH, W, H, true, 5, 80), ...bands(mV, W, H, false, 5, 80)].filter((b) => hasEdges(b, ink, W, H));
+    const t = dominantThickness(loose);
+    if (!t) continue;
+    const score = loose.reduce((s, b) => s + (Math.abs(b.t - t) <= 1.5 && b.u1 - b.u0 >= 4 * b.t ? b.u1 - b.u0 : 0), 0);
+    if (!pick || score > pick.score * 1.15) pick = { maskH: mH, maskV: mV, t, score };
+  }
+  if (!pick) return null;
+  const { maskH, maskV, t } = pick;
   const tMin = Math.max(4, Math.floor(t * 0.4)); // cloisons de 10 cm à côté de murs de 20
   const tMax = Math.ceil(t * 2.5);
   const found = [...bands(maskH, W, H, true, tMin, tMax), ...bands(maskV, W, H, false, tMin, tMax)].filter(
@@ -485,12 +492,40 @@ export function readPlanImage(
   }
 
   // raccords d'angles ; les murs alignés presque bout à bout sont fusionnés (les ouvertures suivent)
-  const { walls: joined, openings: all } = joinWalls(walls, classify, {
+  const raccords = joinWalls(walls, classify, {
     minGap: 0.31,
     maxGap: 0.3,
     collinear: Math.max(0.04, t * mpp * 0.5),
     openings,
   });
+  // portes et fenêtres d'angle : les murs restés ouverts rejoignent le mur qu'ils visent. Un vitrage qui ne couvre
+  // qu'une partie du vide (fenêtre puis trumeau) compte comme une fenêtre : la pièce doit se fermer
+  const glazedShare = (center: Pt, gap: number, dir: Pt, thickness: number) => {
+    const c = toPx(center);
+    const g = gap / mpp;
+    const th = thickness / mpp;
+    const n = { x: -dir.y, y: dir.x };
+    let glazed = 0;
+    let tot = 0;
+    for (let u = -g / 2 + 2; u <= g / 2 - 2; u += 2) {
+      tot++;
+      let lines = 0;
+      let prev = false;
+      for (let v = -th / 2 - 1; v <= th / 2 + 1; v += 1) {
+        const on = raster.inkAt(c.x + dir.x * u + n.x * v, c.y + dir.y * u + n.y * v) === 1;
+        if (on && !prev) lines++;
+        prev = on;
+      }
+      if (lines >= 2) glazed++;
+    }
+    return tot ? glazed / tot : 0;
+  };
+  const classifyEnd: typeof classify = (center, gap, dir, thickness) => {
+    const k = classify(center, gap, dir, thickness);
+    if (k !== "passage") return k;
+    return glazedShare(center, gap, dir, thickness) >= 0.5 ? (gap >= 1.8 ? "baie" : "window") : "passage";
+  };
+  const { walls: joined, openings: all } = closeOpenEnds(raccords.walls, raccords.openings, classifyEnd, 3);
 
   // 5. traits fins tendus d'un mur à un mur parallèle :
   //    - 2 à 4 traits serrés = une porte ou une fenêtre sans mur autour (cadre de porte d'entrée…) ;
@@ -572,7 +607,7 @@ export function readPlanImage(
         while (e + 1 < thin.length && thin[e + 1].c - thin[k].c <= t * 1.6) e++;
         const n = e - k + 1;
         const width = thin[e].c - thin[k].c;
-        if (n >= 2 && n <= 4 && width >= t * 0.3) {
+        if (n >= 2 && n <= 4 && width >= Math.max(3, t * 0.2)) { // cadre fin d'une porte vitrée : 2 traits à 6 px
           const c = (thin[k].c + thin[e].c) / 2;
           const a = toM(ax === "h" ? { x: c, y: cA } : { x: cA, y: c });
           const b = toM(ax === "h" ? { x: c, y: cB } : { x: cB, y: c });
@@ -639,7 +674,45 @@ export function pruneOutdoor(rooms: Room[], walls: Wall[], openings: Opening[], 
       }
       return pointInPolygon(mid, r.points);
     });
-  const keptWalls = walls.filter(touches);
-  const ids = new Set(keptWalls.map((w) => w.id));
+  // murs reliés entre eux (bout contre mur) : un plan mal fermé (peu de pièces trouvées) garde quand même tous
+  // les murs de la maison, il reste à compléter ce qui manque plutôt qu'à tout redessiner
+  const linked = (a: Wall, b: Wall) =>
+    [a.a, a.b].some((p) => pointSegDist(p, b.a, b.b) <= (a.thickness + b.thickness) / 2 + 0.1) ||
+    [b.a, b.b].some((p) => pointSegDist(p, a.a, a.b) <= (a.thickness + b.thickness) / 2 + 0.1);
+  const grow = (seed: Wall[]) => {
+    const inSet = new Set(seed.map((w) => w.id));
+    const queue = [...seed];
+    while (queue.length) {
+      const w = queue.pop()!;
+      for (const v of walls) if (!inSet.has(v.id) && linked(w, v)) {
+        inSet.add(v.id);
+        queue.push(v);
+      }
+    }
+    return inSet;
+  };
+  let ids: Set<string>;
+  const touching = walls.filter(touches);
+  // plan bien lu : on ne garde que les murs des pièces (pas les murets du jardin ni les clôtures)
+  if (touching.length >= walls.length * 0.6) ids = new Set(touching.map((w) => w.id));
+  else if (touching.length) ids = grow(touching);
+  else {
+    // aucune pièce fermée : on garde le plus grand ensemble de murs reliés (la maison), pas le texte ni les clôtures
+    let best = new Set<string>();
+    let bestLen = 0;
+    const seen = new Set<string>();
+    for (const w of walls) {
+      if (seen.has(w.id)) continue;
+      const comp = grow([w]);
+      comp.forEach((id) => seen.add(id));
+      const L = walls.filter((v) => comp.has(v.id)).reduce((s, v) => s + Math.hypot(v.b.x - v.a.x, v.b.y - v.a.y), 0);
+      if (L > bestLen) {
+        bestLen = L;
+        best = comp;
+      }
+    }
+    ids = best;
+  }
+  const keptWalls = walls.filter((w) => ids.has(w.id));
   return { rooms: indoor, walls: keptWalls, openings: openings.filter((o) => ids.has(o.wallId)) };
 }

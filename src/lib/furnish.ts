@@ -1,5 +1,5 @@
 import type { Opening, Pt, Room, Wall } from "./types";
-import { bbox, pointAtWall } from "./geometry";
+import { bbox, pointAtWall, pointInPolygon } from "./geometry";
 
 /* Ameublement automatique : une « recette » par type de pièce, posée contre les murs libres
    (sans gêner portes et passages) et sans chevauchement. Repère du plan, en mètres. */
@@ -22,6 +22,7 @@ export interface Furniture {
   d: number; // profondeur
   rot: number; // angle (rad) : la face avant regarde (sin rot, cos rot) dans le plan
   upper?: boolean; // plan de travail : meubles hauts (pas devant une fenêtre)
+  rise?: number; // escalier : hauteur à gravir (jusqu'au niveau du dessus)
 }
 
 interface Side {
@@ -38,9 +39,15 @@ interface Rect { x0: number; y0: number; x1: number; y1: number }
 
 const facing = (n: Pt) => Math.atan2(n.x, n.y);
 
+const overlaps = (r: Rect, o: Rect, margin: number) => r.x0 < o.x1 + margin && r.x1 > o.x0 - margin && r.y0 < o.y1 + margin && r.y1 > o.y0 - margin;
+
 class Layout {
   sides: Side[];
   occupied: Rect[] = [];
+  /** dégagement devant chaque porte : complet, et réduit à un pas de porte quand la pièce est trop encombrée */
+  clearances: { full: Rect; small: Rect }[] = [];
+  /** 0 = dégagements complets, 1 = réduits, 2 = ignorés (seuls les meubles et les portes du même mur comptent) */
+  relax = 0;
   items: Furniture[] = [];
   b: ReturnType<typeof bbox>;
   constructor(public room: Room, walls: Wall[], openings: Opening[]) {
@@ -66,11 +73,13 @@ class Layout {
           s.doors.push([along - half - 0.15, along + half + 0.15]);
           // dégagement devant la porte : personne ne meuble ce carré
           const p = { x: s.origin.x + s.dir.x * along, y: s.origin.y + s.dir.y * along };
-          const depth = Math.min(1.3, Math.min(b.w, b.h) * 0.45);
-          const far = { x: p.x + s.inward.x * depth, y: p.y + s.inward.y * depth };
-          const a = { x: p.x - s.dir.x * (half + 0.1), y: p.y - s.dir.y * (half + 0.1) };
-          const z = { x: far.x + s.dir.x * (half + 0.1), y: far.y + s.dir.y * (half + 0.1) };
-          this.occupied.push({ x0: Math.min(a.x, z.x), y0: Math.min(a.y, z.y), x1: Math.max(a.x, z.x), y1: Math.max(a.y, z.y) });
+          const zone = (depth: number, margin: number) => {
+            const far = { x: p.x + s.inward.x * depth, y: p.y + s.inward.y * depth };
+            const a = { x: p.x - s.dir.x * (half + margin), y: p.y - s.dir.y * (half + margin) };
+            const z = { x: far.x + s.dir.x * (half + margin), y: far.y + s.dir.y * (half + margin) };
+            return { x0: Math.min(a.x, z.x), y0: Math.min(a.y, z.y), x1: Math.max(a.x, z.x), y1: Math.max(a.y, z.y) };
+          };
+          this.clearances.push({ full: zone(Math.min(1.3, Math.min(b.w, b.h) * 0.45), 0.1), small: zone(0.45, 0) });
         }
       }
     }
@@ -87,12 +96,49 @@ class Layout {
     return { x0: x - hw, y0: y - hd, x1: x + hw, y1: y + hd };
   }
 
+  /** le meuble tient dans la pièce elle-même, pas seulement dans son rectangle englobant (pièces en L) */
+  inside(r: Rect) {
+    const pts = this.room.points;
+    const e = 0.02;
+    const xs = [r.x0 + e, (r.x0 + r.x1) / 2, r.x1 - e];
+    const ys = [r.y0 + e, (r.y0 + r.y1) / 2, r.y1 - e];
+    return xs.every((x) => ys.every((y) => pointInPolygon({ x, y }, pts)));
+  }
+
   free(r: Rect, margin = 0.04) {
     const { b } = this;
     if (r.x0 < b.minX - 1e-6 || r.y0 < b.minY - 1e-6 || r.x1 > b.maxX + 1e-6 || r.y1 > b.maxY + 1e-6) return false;
-    return !this.occupied.some(
-      (o) => r.x0 < o.x1 + margin && r.x1 > o.x0 - margin && r.y0 < o.y1 + margin && r.y1 > o.y0 - margin,
-    );
+    if (!this.inside(r)) return false;
+    if (this.occupied.some((o) => overlaps(r, o, margin))) return false;
+    if (this.relax >= 2) return true;
+    return !this.clearances.some((c) => overlaps(r, this.relax ? c.small : c.full, margin));
+  }
+
+  /** Essaie `place` avec des dégagements complets, puis réduits, puis sans : l'essentiel d'une pièce passe toujours
+      s'il tient physiquement (petites pièces percées de portes et de passages de tous les côtés). */
+  relaxed<T>(place: () => T | null, upTo = 2): T | null {
+    try {
+      for (this.relax = 0; this.relax <= upTo; this.relax++) {
+        const got = place();
+        if (got) return got;
+      }
+      return null;
+    } finally {
+      this.relax = 0;
+    }
+  }
+
+  /** Contre un mur, la plus grande des tailles proposées qui tient, sur le côté le plus accueillant. */
+  fit(kind: FurnitureKind, sizes: [number, number][], opts: { at?: number; tall?: boolean; gap?: number; sides?: Side[]; upTo?: number } = {}) {
+    return this.relaxed(() => {
+      for (const [w, d] of sizes)
+        for (const s of opts.sides ?? this.rankedSides()) {
+          if (w > s.length - 0.04) continue;
+          const item = this.againstSide(s, kind, w, d, { ...opts, at: opts.at === undefined ? undefined : Math.min(opts.at, s.length - w / 2 - 0.02) });
+          if (item) return { item, side: s };
+        }
+      return null;
+    }, opts.upTo);
   }
 
   add(kind: FurnitureKind, x: number, y: number, w: number, d: number, rot: number, block = true) {
@@ -144,6 +190,7 @@ class Layout {
     const x = of.x + f.x * (of.d / 2 + distance + d / 2);
     const y = of.y + f.y * (of.d / 2 + distance + d / 2);
     if (block && !this.free(this.rectOf(x, y, w, d, of.rot), 0.02)) return null;
+    if (!block && !this.inside(this.rectOf(x, y, w * 0.6, d * 0.6, of.rot))) return null; // tapis : au moins son cœur dans la pièce
     return this.add(kind, x, y, w, d, of.rot, block);
   }
 
@@ -175,12 +222,13 @@ class Layout {
         n++;
       }
     }
+    return n;
   }
 
   diningSet(cx: number, cy: number, tw: number, td: number, along: "x" | "y") {
     const rot = along === "x" ? 0 : Math.PI / 2;
     const r = this.rectOf(cx, cy, tw + 1.1, td + 1.1, rot);
-    if (!this.free(r, 0.0)) return false;
+    if (!this.free(r, 0.0)) return false; // table et chaises comprises, dans la pièce
     this.add("table", cx, cy, tw, td, rot);
     const chairs = Math.max(2, Math.floor(tw / 0.6)) ;
     const perSide = Math.floor(chairs / 2);
@@ -215,15 +263,16 @@ export function furnishRoom(room: Room, walls: Wall[], openings: Opening[]): Fur
     case "chambre": {
       const big = L.minDim >= 3;
       const bw = big ? 1.6 : 0.95;
-      const bed = L.rankedSides().reduce<Furniture | null>((acc, s) => acc ?? L.againstSide(s, big ? "lit_double" : "lit_simple", bw, 2.0), null);
+      const bed = L.fit(big ? "lit_double" : "lit_simple", [[bw, 2.0], [0.9, 1.9]])?.item ?? null;
       if (bed) {
         L.beside(bed, "chevet", 0.45, 0.4, 1);
         if (big) L.beside(bed, "chevet", 0.45, 0.4, -1);
         if (area > 9) L.inFront(bed, "tapis", bw + 0.6, 0.9, -0.55, false);
       }
       const bedSide = L.sides.find((s) => bed && Math.abs(Math.atan2(s.inward.x, s.inward.y) - bed.rot) < 0.01);
-      for (const s of L.rankedSides(bedSide ? [bedSide] : [])) if (L.againstSide(s, "armoire", Math.min(2.0, s.length * 0.5), 0.6, { tall: true })) break;
-      L.corners("plante", 0.45, 1);
+      const others = L.rankedSides(bedSide ? [bedSide] : []);
+      L.fit("armoire", [1.6, 1.2, 0.9].map((w): [number, number] => [w, 0.6]), { tall: true, sides: others, upTo: 1 });
+      L.relaxed(() => (L.corners("plante", 0.45, 1) ? true : null), 1);
       break;
     }
     case "salon": {
@@ -251,15 +300,20 @@ export function furnishRoom(room: Room, walls: Wall[], openings: Opening[]): Fur
         }
       }
       if (sofa) {
-        const sofaSide = sides.find((s) => Math.abs(facing(s.inward) - sofa!.rot) < 0.01)!;
-        L.inFront(sofa, "tapis", Math.min(2.6, sofa.w + 0.4), 1.8, 0.05, false);
-        L.inFront(sofa, "table_basse", 1.1, 0.6, 0.45);
-        const opp = L.opposite(sofaSide);
-        const depth = Math.abs(opp.inward.x) > 0 ? b.w : b.h;
-        if (depth < 5) L.againstSide(opp, "meuble_tv", Math.min(1.8, opp.length * 0.5), 0.45);
-        else L.inFront(sofa, "meuble_tv", 1.8, 0.45, 2.6);
-        L.beside(sofa, "lampadaire", 0.35, 0.35, 1, 0.1);
-        L.beside(sofa, "fauteuil", 0.85, 0.85, -1, 0.35);
+        const s0 = sofa;
+        const sofaSide = sides.find((s) => Math.abs(facing(s.inward) - s0.rot) < 0.01);
+        L.inFront(s0, "tapis", Math.min(2.6, s0.w + 0.4), 1.8, 0.05, false);
+        L.relaxed(() => L.inFront(s0, "table_basse", 1.1, 0.6, 0.45) ?? L.inFront(s0, "table_basse", 0.9, 0.5, 0.35), 1);
+        // la télé face au canapé : contre le mur d'en face, sinon posée devant, à bonne distance
+        const opp = sofaSide ? L.opposite(sofaSide) : null;
+        const depth = opp ? (Math.abs(opp.inward.x) > 0 ? b.w : b.h) : 99;
+        const tv =
+          (opp && depth < 5 && L.fit("meuble_tv", [Math.min(1.8, opp.length * 0.5), 1.4, 1.0].map((w): [number, number] => [w, 0.45]), { sides: [opp] })) ||
+          L.relaxed(() => [2.6, 2.2, 3.0].reduce<Furniture | null>((acc, dist) => acc ?? L.inFront(s0, "meuble_tv", 1.6, 0.45, dist), null), 1);
+        void tv;
+        // le fauteuil d'abord (il compte plus), le lampadaire de l'autre côté s'il reste de la place
+        L.relaxed(() => L.beside(s0, "fauteuil", 0.85, 0.85, -1, 0.35) ?? L.beside(s0, "fauteuil", 0.85, 0.85, 1, 0.35), 1);
+        if (!L.beside(s0, "lampadaire", 0.35, 0.35, 1, 0.1)) L.beside(s0, "lampadaire", 0.35, 0.35, -1, 0.1);
       }
       // grand séjour : coin repas dans la partie restante
       if (area > 26) {
@@ -273,31 +327,38 @@ export function furnishRoom(room: Room, walls: Wall[], openings: Opening[]): Fur
       break;
     }
     case "cuisine": {
-      const sides = L.rankedSides();
-      let counter: Furniture | null = null;
-      for (const s of sides) {
-        counter = L.againstSide(s, "plan_travail", Math.min(3.6, s.length - 0.9), 0.62);
-        if (!counter) continue;
+      // le plus long plan de travail qui tient (3,6 m à 1 m), sinon un plan plus court en assouplissant les dégagements
+      const longest = Math.max(...L.sides.map((x) => x.length));
+      const widths: [number, number][] = [];
+      for (let w = Math.min(3.6, longest - 0.3); w >= 0.99; w -= 0.3) widths.push([Math.round(w * 10) / 10, 0.62]);
+      const got = L.fit("plan_travail", widths);
+      const counter = got?.item ?? null;
+      if (got && counter) {
         // pas de meubles hauts devant une fenêtre
+        const s = got.side;
         const u = (counter.x - s.origin.x) * s.dir.x + (counter.y - s.origin.y) * s.dir.y;
-        counter.upper = !s.windows.some(([a, z]) => u + counter!.w / 2 > a && u - counter!.w / 2 < z);
-        break;
+        counter.upper = !s.windows.some(([a, z]) => u + counter.w / 2 > a && u - counter.w / 2 < z);
       }
-      if (counter && !L.beside(counter, "frigo", 0.7, 0.68, 1, 0.05)) L.beside(counter, "frigo", 0.7, 0.68, -1, 0.05);
+      const fridge =
+        (counter && L.relaxed(() => L.beside(counter, "frigo", 0.7, 0.68, 1, 0.05) ?? L.beside(counter, "frigo", 0.7, 0.68, -1, 0.05), 1)) ||
+        L.fit("frigo", [[0.7, 0.68], [0.6, 0.65]], { tall: true });
+      void fridge;
       if (L.minDim >= 3.2) L.diningSet(cx, cy, 1.4, 0.8, b.w >= b.h ? "x" : "y");
-      L.corners("plante", 0.4, 1);
+      L.relaxed(() => (L.corners("plante", 0.4, 1) ? true : null), 1);
       break;
     }
     case "salle_de_bain": {
-      const sides = L.rankedSides();
       const tub = L.minDim >= 1.9 && Math.max(b.w, b.h) >= 2.2;
-      for (const s of sides) if (tub ? L.againstSide(s, "baignoire", 1.7, 0.75, { at: 0.95 }) : L.againstSide(s, "douche", 0.9, 0.9, { at: 0.5 })) break;
-      for (const s of sides) if (L.againstSide(s, "vasque", 1.0, 0.5)) break;
-      for (const s of sides) if (L.againstSide(s, "wc", 0.4, 0.65)) break;
+      // baignoire ou douche (dans un coin), puis vasque et WC ; dans une petite salle d'eau, on serre
+      const bath = tub ? L.fit("baignoire", [[1.7, 0.75]], { at: 0.95, upTo: 1 }) : null;
+      if (!bath) L.fit("douche", [[0.9, 0.9], [0.8, 0.8]], { at: 0.5 });
+      L.fit("vasque", [[1.0, 0.5], [0.8, 0.45], [0.6, 0.42]]);
+      if (!/douche/i.test(room.name)) L.fit("wc", [[0.4, 0.65]]);
       break;
     }
     case "wc": {
-      for (const s of L.rankedSides()) if (L.againstSide(s, "wc", 0.4, 0.65)) break;
+      L.fit("wc", [[0.4, 0.65]]);
+      L.fit("vasque", [[0.5, 0.38]], { upTo: 1 }); // lave-mains
       break;
     }
     case "salle_a_manger": {
@@ -321,15 +382,16 @@ export function furnishRoom(room: Room, walls: Wall[], openings: Opening[]): Fur
     case "couloir": {
       const sides = L.rankedSides();
       if (L.minDim >= 1.1) for (const s of sides) if (s.length > 2.5 && L.againstSide(s, "console", 1.0, 0.32)) break;
-      L.corners("plante", 0.4, 2);
+      L.relaxed(() => (L.corners("plante", 0.4, 2) ? true : null), 1);
       break;
     }
     case "escalier": {
       if (room.stairs) break; // escalier dessiné sur le plan : affiché à sa place exacte par l'app
-      // volée droite le long du plus grand côté, en partant du bas
-      const s = [...L.sides].sort((p, q) => q.length - p.length)[0];
-      const len = Math.min(s.length - 0.2, 4.2);
-      L.againstSide(s, "escalier", len, Math.min(1.0, L.minDim - 0.1), { gap: 0.02 });
+      // volée droite le long du plus grand côté, en partant du bas ; plus courte si les portes gênent
+      const longest = [...L.sides].sort((p, q) => q.length - p.length);
+      const w = Math.min(1.0, L.minDim - 0.1);
+      const lens = [4.2, 3.6, 3.0, 2.6].filter((x) => x <= longest[0].length - 0.2);
+      L.fit("escalier", (lens.length ? lens : [longest[0].length - 0.2]).map((x): [number, number] => [x, w]), { gap: 0.02, sides: longest.slice(0, 2) });
       break;
     }
     case "garage": {
@@ -341,13 +403,17 @@ export function furnishRoom(room: Room, walls: Wall[], openings: Opening[]): Fur
       break;
     }
     case "terrasse": {
-      const s = L.rankedSides()[0];
-      const a = L.againstSide(s, "transat", 0.7, 1.8, { at: s.length * 0.35 });
-      if (a) L.beside(a, "transat", 0.7, 1.8, 1, 0.4);
-      L.corners("plante", 0.6, 3);
+      // les transats ne vont que sur une terrasse assez profonde ; une cour étroite reçoit des plantes
+      if (L.minDim >= 1.9) {
+        const a = L.fit("transat", [[0.7, 1.8]], { upTo: 1 })?.item;
+        if (a) L.beside(a, "transat", 0.7, 1.8, 1, 0.4);
+      }
+      L.relaxed(() => (L.corners("plante", 0.6, 3) ? true : null), 1);
       break;
     }
     default:
+      // pièce sans usage précis : une plante, pour qu'elle ne paraisse pas abandonnée
+      if (area >= 2.5) L.relaxed(() => (L.corners("plante", 0.45, 1) ? true : null), 1);
       break;
   }
   return L.items;

@@ -164,9 +164,11 @@ export function labelRooms(rooms: Room[], words: OcrWord[], toPlan: (p: Pt) => P
     const inside = words.filter((w) => pointInPolygon(toPlan(w.c), r.points));
     // nom : le mot du vocabulaire le plus sûr ; un chiffre juste après (« Chambre 2 ») est gardé
     let label: { v: (typeof VOCAB)[number]; w: OcrWord } | null = null;
+    // pièce ouverte sur un couloir (séjour + dégagement) : la pièce principale l'emporte sur la circulation
+    const weight = (v: (typeof VOCAB)[number], w: OcrWord) => w.conf - (v.type === "couloir" ? 40 : 0);
     for (const w of inside) {
       const v = vocabOf(w.text);
-      if (v && (!label || w.conf > label.w.conf)) label = { v, w };
+      if (v && (!label || weight(v, w) > weight(label.v, label.w))) label = { v, w };
     }
     // surface écrite : « 11,17 m² » — un nombre suivi de m² (sans « m² », c'est une cote)
     const isUnit = (t: string) => /^m[2²°?3]?$/.test(norm(t).replace(/[^a-z0-9°?²]/g, ""));
@@ -185,11 +187,31 @@ export function labelRooms(rooms: Room[], words: OcrWord[], toPlan: (p: Pt) => P
     const best = areaWords.sort((a, b) => b.conf - a.conf)[0];
     const m = best && /^(\d{1,3})[,.](\d{1,2})/.exec(norm(best.text));
     const area = m ? parseFloat(`${m[1]}.${m[2]}`) : 0;
-    if (area >= 1) {
-      const measured = Math.abs(polygonArea(r.points));
-      if (measured > 0.5) ratios.push(Math.sqrt(area / measured));
-    }
+    const measured = Math.abs(polygonArea(r.points));
+    // une surface écrite bien plus petite que la pièce : la pièce en réunit plusieurs (séjour ouvert sur le
+    // dégagement) ; elle ne dit rien de l'échelle
+    const merged = area >= 1 && measured > 2.5 * area;
+    if (area >= 1 && !merged && measured > 0.5) ratios.push(Math.sqrt(area / measured));
     if (!label) return r;
+    // un « dégagement » de plus de 18 m² sans surface lisible est aussi un séjour ouvert (un hall, lui, peut être grand)
+    const bigPassage = label.v.name === "Dégagement" && area < 1 && measured >= 18;
+    // ou une grande surface écrite loin du nom du dégagement (celle du séjour, dont le nom n'a pas été lu)
+    const valueOf = (w: OcrWord) => {
+      const mm = /^(\d{1,3})[,.](\d{1,2})/.exec(norm(w.text));
+      return mm ? parseFloat(`${mm[1]}.${mm[2]}`) : 0;
+    };
+    const lw = label.w;
+    const own = areaWords.slice().sort((a, b) => Math.hypot(a.c.x - lw.c.x, a.c.y - lw.c.y) - Math.hypot(b.c.x - lw.c.x, b.c.y - lw.c.y))[0];
+    const otherBig = !!own && areaWords.some((w) => w !== own && valueOf(w) >= 8 && valueOf(w) > 2 * valueOf(own));
+    // ou une surface écrite de séjour (12 m² et plus) pour un simple dégagement
+    const bigWritten = label.v.name === "Dégagement" && area >= 12;
+    if (((merged && label.v.type === "couloir") || bigPassage || bigWritten || (otherBig && label.v.type === "couloir")) && measured >= 12) {
+      // seul le nom du couloir a été lu : le reste de la pièce est le séjour
+      named++;
+      namedIds.add(r.id);
+      count["Séjour"] = (count["Séjour"] ?? 0) + 1;
+      return { ...r, name: count["Séjour"]! > 1 ? `Séjour ${count["Séjour"]}` : "Séjour", type: "salon" as const };
+    }
     named++;
     namedIds.add(r.id);
     const { v, w } = label;

@@ -8,6 +8,7 @@ import {
   add, dist, fmt, fmtArea, mul, perp, pointAtWall, polygonArea, projectOnWall, roomAnchor, sub, wallDir, wallLength,
 } from "@/lib/geometry";
 import { detectRoom } from "@/lib/roomDetect";
+import { flightOf } from "@/lib/levels";
 
 export type Tool = "select" | "wall" | OpeningKind | "room" | "calibrate";
 
@@ -26,9 +27,11 @@ interface Props {
   onCalibrate: (a: Pt, b: Pt) => void;
   onMessage: (m: string) => void;
   fitKey: number;
+  /** niveau du dessous, dessiné en gris pour caler l'étage (murs et escaliers qui montent ici) */
+  ghost?: { walls: Wall[]; stairs: NonNullable<Room["stairs"]>[] };
 }
 
-export default function Editor2D({ tool, wallThickness, wallHeight, roomType, selected, onSelect, onCalibrate, onMessage, fitKey }: Props) {
+export default function Editor2D({ tool, wallThickness, wallHeight, roomType, selected, onSelect, onCalibrate, onMessage, fitKey, ghost }: Props) {
   const project = useProject((s) => s.project);
   const addWalls = useProject((s) => s.addWalls);
   const addOpening = useProject((s) => s.addOpening);
@@ -60,6 +63,7 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
     if (!el) return;
     const pts: Pt[] = walls.flatMap((w) => [w.a, w.b]);
     if (background) pts.push({ x: background.x, y: background.y }, { x: background.x + background.widthPx * background.scale, y: background.y + background.heightPx * background.scale });
+    ghost?.walls.forEach((w) => pts.push(w.a, w.b));
     if (!pts.length) return setView({ s: 40, ox: 80, oy: 80 });
     const xs = pts.map((p) => p.x);
     const ys = pts.map((p) => p.y);
@@ -67,7 +71,7 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
     const r = el.getBoundingClientRect();
     const s = Math.min((r.width - 120) / Math.max(1, x1 - x0), (r.height - 120) / Math.max(1, y1 - y0));
     setView({ s, ox: (r.width - (x1 - x0) * s) / 2 - x0 * s, oy: (r.height - (y1 - y0) * s) / 2 - y0 * s });
-  }, [walls, background]);
+  }, [walls, background, ghost]);
   const onFit = useEffectEvent(fit);
   useEffect(() => {
     // après la mise en page, pour mesurer le SVG
@@ -339,6 +343,43 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
               />
               <text x={c.x} y={c.y - px(4)} textAnchor="middle" fontSize={px(13)} fontWeight={600} fill="#2a2620">{r.name}</text>
               <text x={c.x} y={c.y + px(12)} textAnchor="middle" fontSize={px(11)} fill="#6b6459">{fmtArea(Math.abs(polygonArea(r.points)))}</text>
+            </g>
+          );
+        })}
+
+        {/* niveau du dessous, pour caler l'étage, et trémies de ses escaliers */}
+        {ghost?.walls.map((w) => (
+          <polygon key={`g-${w.id}`} points={wallPoly(w)} fill="#8a8273" fillOpacity={0.22} stroke="#6f6858" strokeOpacity={0.7} strokeWidth={px(1)} strokeDasharray={`${px(4)} ${px(3)}`} pointerEvents="none" />
+        ))}
+        {ghost?.stairs.map((st, k) => {
+          const fl = flightOf(st);
+          return (
+            <g key={`gs-${k}`} pointerEvents="none">
+              <polygon points={fl.corners.map((p) => `${p.x},${p.y}`).join(" ")} fill="#2a2620" fillOpacity={0.08} stroke="#d9622b" strokeWidth={px(1.4)} strokeDasharray={`${px(6)} ${px(4)}`} />
+              <text x={fl.center.x} y={fl.center.y + px(4)} textAnchor="middle" fontSize={px(11)} fontWeight={600} fill="#d9622b">Trémie de l&apos;escalier</text>
+            </g>
+          );
+        })}
+
+        {/* escaliers : marches et flèche dans le sens de la montée */}
+        {rooms.map((r) => {
+          if (!r.stairs) return null;
+          const fl = flightOf(r.stairs);
+          const n = Math.max(6, Math.round(r.stairs.w / 0.26));
+          const at = (u: number, v: number) => ({ x: fl.bottom.x + fl.dir.x * u + fl.side.x * v, y: fl.bottom.y + fl.dir.y * u + fl.side.y * v });
+          const tip = at(r.stairs.w - 0.15, 0);
+          const head = [at(r.stairs.w - 0.45, -0.15), tip, at(r.stairs.w - 0.45, 0.15)];
+          return (
+            <g key={`esc-${r.id}`} pointerEvents="none">
+              <polygon points={fl.corners.map((p) => `${p.x},${p.y}`).join(" ")} fill="#f7f5f0" fillOpacity={0.7} stroke="#2a2620" strokeWidth={px(1.2)} />
+              {Array.from({ length: n - 1 }, (_, k) => {
+                const u = ((k + 1) * r.stairs!.w) / n;
+                const a = at(u, -r.stairs!.d / 2);
+                const b = at(u, r.stairs!.d / 2);
+                return <line key={k} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#2a2620" strokeWidth={px(0.8)} />;
+              })}
+              <line x1={fl.bottom.x} y1={fl.bottom.y} x2={tip.x} y2={tip.y} stroke="#d9622b" strokeWidth={px(1.6)} />
+              <polyline points={head.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="#d9622b" strokeWidth={px(1.6)} />
             </g>
           );
         })}

@@ -4,7 +4,7 @@ import { OPENING_DEFAULTS, ROOM_LABELS, uid } from "./types";
 import { bbox, openingSides, pointInPolygon, polygonArea } from "./geometry";
 import { pruneOutdoor, readPlanImage } from "./raster";
 import { detectAllRooms } from "./roomDetect";
-import { labelRooms, readWords } from "./ocr";
+import { labelRooms, readWords, type OcrWord } from "./ocr";
 
 /* Lecture des fichiers de plan : image (PNG, JPG…) ou PDF (1re page), réduits à 2400 px
    pour tenir dans la sauvegarde locale du navigateur. */
@@ -43,12 +43,12 @@ export async function readImage(file: File): Promise<PlanImage> {
   }
 }
 
-export async function readPdf(file: File): Promise<PlanImage & { pages: number }> {
+export async function readPdf(file: File, pageNumber = 1): Promise<PlanImage & { pages: number }> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
   const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
   const doc = await task.promise;
-  const page = await doc.getPage(1);
+  const page = await doc.getPage(Math.min(Math.max(1, pageNumber), doc.numPages));
   const base = page.getViewport({ scale: 1 });
   const viewport = page.getViewport({ scale: MAX / Math.max(base.width, base.height) });
   const w = Math.round(viewport.width);
@@ -135,9 +135,51 @@ export async function imagePixels(src: string): Promise<{ data: Uint8ClampedArra
 /** Lecture automatique d'un plan en image : murs, ouvertures, pièces, puis noms et surfaces écrits (OCR).
     L'échelle est celle du calque si elle a été calibrée ; sinon elle est déduite des surfaces écrites
     sur le plan, ou à défaut estimée d'après l'épaisseur des murs. */
+/** Efface du plan les mots lus (noms, surfaces, cotes) : leurs lettres, soudées par la recherche des hachures,
+    passeraient pour des bouts de mur. Un mot traversé par un long trait (un mur) est laissé tel quel. */
+function eraseWords(px: { data: Uint8ClampedArray; width: number; height: number }, words: OcrWord[]) {
+  const { width: W, height: H } = px;
+  const data = new Uint8ClampedArray(px.data);
+  const dark = (x: number, y: number) => {
+    const i = (y * W + x) * 4;
+    return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114 < 170;
+  };
+  for (const w of words) {
+    // de vrais mots seulement : lettres, ou nombres à virgule (cotes, surfaces) — pas un motif de hachures lu comme du texte
+    if (w.conf < 60 || !(/[a-zà-ÿ]{3,}/i.test(w.text) || /\d[,.]\d/.test(w.text) || /^m[2²]$/i.test(w.text))) continue;
+    const [bw, bh] = w.vertical ? [w.h, w.w] : [w.w, w.h];
+    const x0 = Math.max(0, Math.floor(w.c.x - bw / 2 - 1));
+    const x1 = Math.min(W - 1, Math.ceil(w.c.x + bw / 2 + 1));
+    const y0 = Math.max(0, Math.floor(w.c.y - bh / 2 - 1));
+    const y1 = Math.min(H - 1, Math.ceil(w.c.y + bh / 2 + 1));
+    // un trait qui traverse toute la boîte et continue au-delà : c'est un mur
+    const crossedRow = (y: number) => dark(Math.max(0, x0 - 2), y) && dark(Math.min(W - 1, x1 + 2), y) && [...Array(x1 - x0 + 1).keys()].every((k) => dark(x0 + k, y));
+    const crossedCol = (x: number) => dark(x, Math.max(0, y0 - 2)) && dark(x, Math.min(H - 1, y1 + 2)) && [...Array(y1 - y0 + 1).keys()].every((k) => dark(x, y0 + k));
+    let wall = false;
+    for (let y = y0; y <= y1 && !wall; y++) wall = crossedRow(y);
+    for (let x = x0; x <= x1 && !wall; x++) wall = crossedCol(x);
+    if (wall) continue;
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) {
+        const i = (y * W + x) * 4;
+        data[i] = data[i + 1] = data[i + 2] = 255;
+      }
+  }
+  return { data, width: W, height: H };
+}
+
 export async function autoReadPlan(bg: Background, wallHeight: number, onStep: (m: string) => void = () => {}) {
   const px = await imagePixels(bg.src);
-  const res = readPlanImage(px, { metersPerPx: bg.calibrated ? bg.scale : undefined, origin: { x: bg.x, y: bg.y }, wallHeight });
+  // le texte d'abord : il sert à nommer les pièces, et on l'efface avant de chercher les murs
+  onStep("Lecture des noms des pièces…");
+  let words: OcrWord[] = [];
+  try {
+    words = await readWords(bg.src, px);
+  } catch (e) {
+    console.warn("OCR indisponible", e);
+  }
+  onStep("Lecture des murs…");
+  const res = readPlanImage(eraseWords(px, words), { metersPerPx: bg.calibrated ? bg.scale : undefined, origin: { x: bg.x, y: bg.y }, wallHeight });
   if (!res || res.walls.length < 3) return null;
   const toPx = (p: Pt) => ({ x: (p.x - bg.x) / res.metersPerPx, y: (p.y - bg.y) / res.metersPerPx });
   const toPlan = (p: Pt) => ({ x: bg.x + p.x * res.metersPerPx, y: bg.y + p.y * res.metersPerPx });
@@ -159,8 +201,6 @@ export async function autoReadPlan(bg: Background, wallHeight: number, onStep: (
 
   // noms et surfaces écrits sur le plan
   try {
-    onStep("Lecture des noms des pièces…");
-    const words = await readWords(bg.src, px);
     const lab = labelRooms(rooms, words, toPlan);
     named = lab.named;
     rooms = lab.rooms;

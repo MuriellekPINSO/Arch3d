@@ -16,7 +16,7 @@ export const EMPTY_PROJECT: Project = {
   furnished: true,
 };
 
-type Data = Pick<Project, "walls" | "openings" | "rooms" | "background" | "furniture">;
+type Data = Pick<Project, "walls" | "openings" | "rooms" | "background" | "furniture" | "levels" | "level">;
 
 interface Store {
   project: Project;
@@ -35,6 +35,8 @@ interface Store {
   updateOpening: (id: string, o: Partial<Opening>) => void;
   addRoom: (r: Room) => void;
   updateRoom: (id: string, r: Partial<Room>) => void;
+  /** pièce d'un niveau quelconque (le niveau actif est dans rooms, les autres dans levels) */
+  updateRoomIn: (level: number, id: string, r: Partial<Room>) => void;
   remove: (id: string) => void;
   setBackground: (b: Background | null) => void;
 }
@@ -62,7 +64,15 @@ const safeStorage = {
   },
 };
 
-const snapshot = (p: Project): Data => ({ walls: p.walls, openings: p.openings, rooms: p.rooms, background: p.background, furniture: p.furniture });
+const snapshot = (p: Project): Data => ({
+  walls: p.walls,
+  openings: p.openings,
+  rooms: p.rooms,
+  background: p.background,
+  furniture: p.furniture,
+  levels: p.levels,
+  level: p.level,
+});
 
 export const useProject = create<Store>()(
   persist(
@@ -96,6 +106,15 @@ export const useProject = create<Store>()(
       updateOpening: (id, o) => get().commit((p) => ({ openings: p.openings.map((x) => (x.id === id ? { ...x, ...o } : x)) })),
       addRoom: (r) => get().commit((p) => ({ rooms: [...p.rooms, r] })),
       updateRoom: (id, r) => get().commit((p) => ({ rooms: p.rooms.map((x) => (x.id === id ? { ...x, ...r } : x)) })),
+      updateRoomIn: (level, id, r) => {
+        const p = get().project;
+        if (level === (p.level ?? 0) || !p.levels?.[level]?.data) return get().updateRoom(id, r);
+        get().commit((q) => ({
+          levels: q.levels!.map((l, i) =>
+            i === level && l.data ? { ...l, data: { ...l.data, rooms: l.data.rooms.map((x) => (x.id === id ? { ...x, ...r } : x)) } } : l,
+          ),
+        }));
+      },
       remove: (id) =>
         get().commit((p) => ({
           walls: p.walls.filter((x) => x.id !== id),

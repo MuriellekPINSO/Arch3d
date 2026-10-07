@@ -4,25 +4,30 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRight, Box, BrickWall, Check, Clapperboard, Sparkles, Columns2, Monitor, Smartphone, Square, DoorOpen, Download, FilePlus2, FolderOpen, Footprints, Glasses, Grid2x2,
-  House, Maximize2, MousePointer2, PaintBucket, Pause, Play, Redo2, RotateCcw, Route, Ruler, Save, Scissors, Sofa,
-  Trash2, Undo2, Upload, WandSparkles, X,
+  ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Hammer, House, Layers, Magnet, Maximize2, MousePointer2, PaintBucket, Pause, Play, Plus, Redo2, RotateCcw, Route, Ruler, Save, Scissors, Sofa,
+  Tag, Trash2, Undo2, Upload, WandSparkles, X,
 } from "lucide-react";
 import type { Background, OpeningKind, Project, Pt, Room, RoomType } from "@/lib/types";
 import { OPENING_DEFAULTS, ROOM_LABELS } from "@/lib/types";
 import { EMPTY_PROJECT, useProject } from "@/lib/store";
-import { SAMPLE_PROJECT } from "@/lib/sample";
+import { SAMPLE_DUPLEX, SAMPLE_PROJECT } from "@/lib/sample";
 import { STYLES } from "@/lib/styles";
 import { moveF, removeF, rotateF } from "@/lib/design";
 import DesignPanel from "./DesignPanel";
 import RenduIA from "./RenduIA";
-import { furnish, type Furniture } from "@/lib/furnish";
+import type { CaptureAPI } from "./three/capture";
+import { furnish } from "@/lib/furnish";
 import { buildTour, roomViewpoint, yawTowards } from "@/lib/tour";
+import {
+  activeLevel, addLevel, alignOffset, defaultStairs, houseLevels, removeLevel, renameLevel, switchLevel, translateActive,
+} from "@/lib/levels";
+import { buildDuration } from "./three/build";
 import { importDxf } from "@/lib/dxf";
 import { detectAllRooms } from "@/lib/roomDetect";
 import { autoReadPlan, fixInteriorOpenings, readImage, readPdf, roomsFromPolygons } from "@/lib/importers";
 import { add, dist, fmt, fmtArea, mul, pointInPolygon, polygonArea, roomAnchor, wallDir, wallLength } from "@/lib/geometry";
 import Editor2D, { type Tool } from "./editor/Editor2D";
-import type { ViewMode } from "./three/Viewer3D";
+import type { ViewMode, WalkStart } from "./three/Viewer3D";
 import { getXRStore } from "./three/xrStore";
 
 const Viewer3D = dynamic(() => import("./three/Viewer3D"), {
@@ -115,8 +120,9 @@ function TypeSelect({ value, onChange, className = "" }: { value: RoomType; onCh
   );
 }
 
-function RoomList({ rooms, onPick, pickLabel }: { rooms: Room[]; onPick?: (r: Room) => void; pickLabel?: string }) {
-  const updateRoom = useProject((s) => s.updateRoom);
+function RoomList({ rooms, level, onPick, pickLabel }: { rooms: Room[]; level?: number; onPick?: (r: Room) => void; pickLabel?: string }) {
+  const updateRoomIn = useProject((s) => s.updateRoomIn);
+  const updateRoom = (id: string, r: Partial<Room>) => updateRoomIn(level ?? useProject.getState().project.level ?? 0, id, r);
   if (!rooms.length) return <p className="text-sm text-muted">Aucune pièce. À l&apos;étape Plan, outil « Pièce » : cliquez dans chaque pièce.</p>;
   return (
     <ul className="space-y-2">
@@ -172,17 +178,24 @@ export default function App() {
   const [playing, setPlaying] = useState(true);
   const [stopIdx, setStopIdx] = useState(-1);
   const [tourNonce, setTourNonce] = useState(0);
-  const [walkAt, setWalkAt] = useState<{ p: Pt; yaw: number } | null>(null);
+  const [walkAt, setWalkAt] = useState<WalkStart | null>(null);
   const exportRef = useRef<(() => void) | null>(null);
   // vidéo de la visite guidée
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const [rec, setRec] = useState<{ format: "paysage" | "vertical"; t0: number } | null>(null);
   const [recMenu, setRecMenu] = useState(false);
+  const [recWhat, setRecWhat] = useState<"visite" | "construction">("visite");
   const [recTime, setRecTime] = useState(0);
   const [aiOpen, setAiOpen] = useState(false);
-  const [roofShot, setRoofShot] = useState(false); // toit-terrasse le temps d'une photo de façade
+  const [roof, setRoof] = useState(false); // toit-terrasse (bouton Toit, et photo de façade)
+  // valeurs à jour pour les captures qui s'enchaînent (film complet) : le panneau garde d'anciennes fonctions
+  const live = useRef({ mode: "maquette" as ViewMode, roof: false });
+  useEffect(() => {
+    live.current = { mode, roof };
+  });
   const shotRef = useRef<(() => () => void) | null>(null);
+  const captureRef = useRef<CaptureAPI | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const say = useCallback((m: string) => setToast(m), []);
@@ -192,32 +205,80 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // mobilier : celui placé à la main (design d'espace), sinon l'ameublement automatique
+  // tous les niveaux, avec leurs meubles (posés à la main, sinon automatiques) et les escaliers lus sur le plan
+  const house = useMemo(() => houseLevels(project), [project]);
+  const level = activeLevel(project);
+  const multi = house.length > 1;
+  const hasWalls = house.some((L) => L.walls.length > 0);
+  const allRooms = useMemo(() => house.flatMap((L) => L.rooms), [house]);
+  // à l'étage, le plan montre le niveau du dessous et la trémie de ses escaliers
+  const below = level > 0 ? house[level - 1] : null;
+  const ghost = useMemo(() => (below ? { walls: below.walls, stairs: below.furniture.filter((f) => f.kind === "escalier") } : undefined), [below]);
+  // mobilier du niveau actif : celui placé à la main (design d'espace), sinon l'ameublement automatique
   const autoFurniture = useMemo(
     () => (project.furnished && !project.furniture ? furnish(rooms, walls, openings) : []),
     [project.furnished, project.furniture, rooms, walls, openings],
   );
   const furniture = project.furniture ?? autoFurniture;
-  // escaliers lus sur le plan : de la structure, toujours affichés (même sans mobilier)
-  const stairsF = useMemo<Furniture[]>(
-    () => rooms.filter((r) => r.stairs).map((r) => ({ id: `escalier-${r.id}`, roomId: r.id, kind: "escalier", ...r.stairs! })),
-    [rooms],
-  );
-  const shownFurniture = useMemo(() => (stairsF.length ? [...furniture, ...stairsF] : furniture), [furniture, stairsF]);
   const [selectedF, setSelectedF] = useState<string | null>(null);
   const [designRoom, setDesignRoom] = useState<string | null>(null);
   // tourNonce : recrée la visite pour la relancer depuis le début
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const tour = useMemo(() => buildTour(rooms, walls, openings, shownFurniture), [rooms, walls, openings, shownFurniture, tourNonce]);
-  const walkStart = useMemo(() => {
+  const tour = useMemo(
+    () => buildTour(house.map((L) => ({ rooms: L.rooms, walls: L.walls, openings: L.openings, furniture: L.furniture, z: L.z, flights: L.flights }))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [house, tourNonce],
+  );
+  // film de présentation : les pièces de la visite guidée, sans les très petites (WC, douche, hall de moins de 3,5 m²)
+  const filmRooms = useMemo(
+    () =>
+      (tour?.stops ?? [])
+        .map((s) => allRooms.find((r) => r.id === s.roomId))
+        .filter((r): r is Room => !!r && Math.abs(polygonArea(r.points)) >= 3.5 && r.type !== "wc")
+        .map((r) => ({ id: r.id, name: r.name })),
+    [tour, allRooms],
+  );
+  const walkStart = useMemo<WalkStart>(() => {
     if (walkAt) return walkAt;
     if (tour && tour.points.length > 1) {
       const [p, q] = tour.points;
-      return { p, yaw: yawTowards(p, q) };
+      return { p, yaw: yawTowards(p, q), level: 0 };
     }
-    const r = rooms[0];
-    return { p: r ? roomAnchor(r) : { x: 5, y: 5 }, yaw: 0 };
-  }, [tour, rooms, walkAt]);
+    const r = house[0]?.rooms[0];
+    return { p: r ? roomAnchor(r) : { x: 5, y: 5 }, yaw: 0, level: 0 };
+  }, [tour, house, walkAt]);
+  /** point de vue sur le seuil d'une pièce, quel que soit son niveau */
+  const visitRoom = (r: Room) => {
+    const L = house.find((x) => x.rooms.some((y) => y.id === r.id)) ?? house[level];
+    setWalkAt({ ...roomViewpoint(r, L.rooms, L.walls, L.openings, L.furniture), level: L.index });
+    setMode("visite");
+  };
+  // niveau montré en maquette (au-dessus, rien) ; à l'étape Intérieur, c'est le niveau aménagé
+  const [viewLevel, setViewLevel] = useState<number | null>(null);
+  const shownLevel = step === "interieur" ? level : Math.min(viewLevel ?? house.length - 1, house.length - 1);
+  const [labelsOn, setLabelsOn] = useState(true);
+  // animation « la maison se construit »
+  const [build, setBuild] = useState(0);
+  const [building, setBuilding] = useState(false);
+  const buildTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onBuilt = useRef<(() => void) | null>(null);
+  const lastBuilt = useRef("");
+  const builtDone = () => {
+    if (buildTimer.current) clearTimeout(buildTimer.current);
+    setBuilding(false);
+    onBuilt.current?.();
+    onBuilt.current = null;
+  };
+  const playBuild = (then?: () => void) => {
+    setMode("maquette");
+    setViewLevel(null);
+    setBuild((b) => b + 1);
+    setBuilding(true);
+    onBuilt.current = then ?? null;
+    // la 3D prévient à la fin ; filet de sécurité si elle a été quittée entre-temps
+    if (buildTimer.current) clearTimeout(buildTimer.current);
+    buildTimer.current = setTimeout(builtDone, buildDuration(house.length) * 1000 + 10_000);
+  };
+  useEffect(() => () => void (buildTimer.current && clearTimeout(buildTimer.current)), []);
 
   // raccourcis : annuler / rétablir, outils
   useEffect(() => {
@@ -267,7 +328,8 @@ export default function App() {
         const ops = fixInteriorOpenings(res.openings, res.walls, found);
         commit(() => ({ walls: res.walls, openings: ops, rooms: found, background: null, furniture: undefined }));
         patch({ planFloor: false, furnished: true });
-        patch({ name: file.name.replace(/\.dxf$/i, "") });
+        if (level === 0) patch({ name: file.name.replace(/\.dxf$/i, "") });
+        else alignBelow();
         setTool("select");
         setFitKey((k) => k + 1);
         const read = res.texts.length ? " (noms lus sur le plan)" : "";
@@ -276,10 +338,20 @@ export default function App() {
       const isPdf = name.endsWith(".pdf") || file.type === "application/pdf";
       if (!isPdf && !file.type.startsWith("image/")) return say("Format non pris en charge : image (PNG, JPG), PDF, DXF ou projet .json.");
       setBusy(isPdf ? "Lecture du PDF…" : "Chargement de l'image…");
-      const img = isPdf ? await readPdf(file) : await readImage(file);
+      let img: { src: string; w: number; h: number; pages?: number } = isPdf ? await readPdf(file) : await readImage(file);
+      const pages = img.pages ?? 1;
+      if (pages > 1) {
+        // un plan par page (rez-de-chaussée, étage…) : on demande laquelle
+        setBusy(null);
+        const ans = prompt(`Ce PDF a ${pages} pages. Quelle page importer pour « ${house[level].name} » ?`, String(Math.min(level + 1, pages)));
+        const page = parseInt(ans ?? "", 10);
+        if (!page) return;
+        setBusy("Lecture du PDF…");
+        if (page !== 1) img = await readPdf(file, page);
+      }
       const bg: Background = { src: img.src, widthPx: img.w, heightPx: img.h, scale: 15 / img.w, x: 0, y: 0, opacity: 0.4 };
       setBackground(bg);
-      patch({ name: file.name.replace(/\.[^.]+$/, "") });
+      if (level === 0) patch({ name: file.name.replace(/\.[^.]+$/, "") });
       setStep("plan");
       setSelected(null);
       await readImagePlan(bg);
@@ -311,6 +383,10 @@ export default function App() {
       }));
       // fidèle au plan : son dessin est plaqué au sol (meubles dessinés, jardin…), sans mobilier ajouté
       patch({ planFloor: true, furnished: false });
+      if (activeLevel(useProject.getState().project) > 0) {
+        const d = alignOffset(useProject.getState().project);
+        if (d && Math.hypot(d.x, d.y) > 0.01) commit((p) => translateActive(p, d));
+      }
       const count = (k: string) => res.openings.filter((o) => o.kind === k).length;
       setTool("select");
       setFitKey((k) => k + 1);
@@ -371,6 +447,33 @@ export default function App() {
     }
   };
 
+  /* ----- niveaux ----- */
+  const gotoLevel = (i: number) => {
+    patch(switchLevel(useProject.getState().project, i));
+    setSelected(null);
+    setSelectedF(null);
+    setDesignRoom(null);
+  };
+  const newLevel = () => {
+    commit((p) => addLevel(p));
+    setSelected(null);
+    setTool("select");
+    say("Étage ajouté : ses façades reprennent celles du dessous. Importez son plan avec « Ouvrir », ou tracez ses cloisons.");
+  };
+  const dropLevel = (i: number) => {
+    if (!confirm(`Supprimer « ${house[i].name} » et tout ce qu'il contient ?`)) return;
+    commit((p) => removeLevel(p, i));
+    setSelected(null);
+  };
+  /** pose le niveau actif sur celui du dessous (façades l'une sur l'autre) */
+  const alignBelow = () => {
+    const d = alignOffset(useProject.getState().project);
+    if (!d) return say("Rien à caler : il faut des murs sur les deux niveaux.");
+    if (Math.hypot(d.x, d.y) < 0.01) return say("Ce niveau est déjà calé sur celui du dessous.");
+    commit((p) => translateActive(p, d));
+    say(`Niveau calé sur celui du dessous (décalé de ${fmt(Math.hypot(d.x, d.y))}).`);
+  };
+
   const autoRooms = () => {
     const polys = detectAllRooms(walls);
     if (!polys.length) return say("Aucune zone fermée : vérifiez que les murs se rejoignent.");
@@ -385,11 +488,19 @@ export default function App() {
   };
 
   const goto3d = (target: Step) => {
-    if (target !== "plan" && !walls.length) return say("Commencez par importer ou dessiner un plan.");
-    if (target !== "plan" && !rooms.length) say("Astuce : définissez les pièces (outil Pièce) pour avoir les sols, le mobilier et la visite guidée.");
+    if (target !== "plan" && !hasWalls) return say("Commencez par importer ou dessiner un plan.");
+    if (target !== "plan" && !allRooms.length) say("Astuce : définissez les pièces (outil Pièce) pour avoir les sols, le mobilier et la visite guidée.");
     setStep(target);
     setSelected(null);
     if (target === "interieur" && mode !== "maquette") setMode("maquette");
+    // en arrivant du plan, la maison se construit sous vos yeux (une fois par version du plan)
+    if (target === "3d" && step === "plan") {
+      const sig = house.map((L) => `${L.walls.length}:${L.walls[0]?.id ?? ""}:${L.rooms.length}`).join("|");
+      if (sig !== lastBuilt.current) {
+        lastBuilt.current = sig;
+        playBuild();
+      }
+    }
   };
 
   const downloadBlob = (blob: Blob, name: string) => {
@@ -400,13 +511,13 @@ export default function App() {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   };
 
-  /** Filme la visite guidée (le canvas 3D seul, sans l'interface) et télécharge la vidéo à la fin. */
-  const startRecording = (format: "paysage" | "vertical") => {
+  /** Filme la visite guidée ou la construction de la maison (le canvas 3D seul, sans l'interface) et télécharge la vidéo à la fin. */
+  const startRecording = (format: "paysage" | "vertical", what: "visite" | "construction" = "visite") => {
     setRecMenu(false);
-    if (!tour) return say("Définissez au moins une pièce pour générer la visite guidée.");
+    if (what === "visite" && !tour) return say("Définissez au moins une pièce pour générer la visite guidée.");
     if (typeof MediaRecorder === "undefined") return say("Ce navigateur ne permet pas d'enregistrer une vidéo. Essayez Chrome, Edge ou Safari récent.");
     setRec({ format, t0: 0 }); // le cadre change de format avant de filmer
-    setMode("guidee");
+    setMode(what === "visite" ? "guidee" : "maquette");
     setTimeout(() => {
       const canvas = canvasRef.current;
       if (!canvas) return setRec(null);
@@ -420,14 +531,16 @@ export default function App() {
         const type = r.mimeType || "video/webm";
         const blob = new Blob(chunks, { type });
         const slug = project.name.replace(/[^\p{L}\p{N}-]+/gu, "-") || "maison";
-        downloadBlob(blob, `visite-${slug}${format === "vertical" ? "-vertical" : ""}.${type.includes("mp4") ? "mp4" : "webm"}`);
+        downloadBlob(blob, `${what}-${slug}${format === "vertical" ? "-vertical" : ""}.${type.includes("mp4") ? "mp4" : "webm"}`);
         setRec(null);
         say(`Vidéo enregistrée (${(blob.size / 1e6).toFixed(1)} Mo).`);
       };
-      // la visite repart du début au moment où l'on filme
-      setStopIdx(-1);
-      setPlaying(true);
-      setTourNonce((n) => n + 1);
+      if (what === "visite") {
+        // la visite repart du début au moment où l'on filme
+        setStopIdx(-1);
+        setPlaying(true);
+        setTourNonce((n) => n + 1);
+      } else playBuild(() => setTimeout(stopRecording, 1200)); // on laisse voir la maison finie un instant
       r.start(1000);
       recorder.current = r;
       setRec({ format, t0: Date.now() });
@@ -461,7 +574,7 @@ export default function App() {
     return null;
   }, [selected, walls, openings, rooms]);
 
-  const empty = !walls.length && !background;
+  const empty = !multi && !walls.length && !background;
 
   return (
     <div className="flex h-dvh flex-col">
@@ -582,14 +695,20 @@ export default function App() {
               onCalibrate={(a, b) => setCalib({ a, b, value: dist(a, b).toFixed(2) })}
               onMessage={say}
               fitKey={fitKey}
+              ghost={ghost}
             />
-          ) : walls.length ? (
+          ) : hasWalls ? (
             <div className={rec?.format === "vertical" ? "absolute inset-0 flex justify-center" : "relative size-full"}>
             {/* cadre 9:16 pendant l'enregistrement vertical (Reels, TikTok) */}
             <div className={rec?.format === "vertical" ? "relative aspect-[9/16] h-full min-w-0 max-w-full overflow-hidden shadow-2xl" : "relative size-full"}>
             <Viewer3D
               project={project}
-              furniture={shownFurniture}
+              levels={house}
+              showLevel={shownLevel}
+              labels={labelsOn}
+              build={build}
+              building={building}
+              onBuildEnd={builtDone}
               mode={mode}
               cutaway={cutaway}
               tour={tour}
@@ -600,6 +719,7 @@ export default function App() {
               design={
                 step === "interieur" && mode === "maquette"
                   ? {
+                      level,
                       selectedId: selectedF,
                       onSelect: setSelectedF,
                       onCommit: (id, x, y) => commit(() => ({ furniture: moveF(furniture, id, x, y, rooms) })),
@@ -608,8 +728,9 @@ export default function App() {
                   : undefined
               }
               canvasRef={canvasRef}
-              roof={roofShot}
+              roof={roof && mode === "maquette"}
               shotRef={shotRef}
+              captureRef={captureRef}
               onTourEnd={() => recorder.current && setTimeout(stopRecording, 800)}
             />
             </div>
@@ -624,16 +745,11 @@ export default function App() {
                 <p className="mt-2 text-[15px] leading-relaxed text-muted">
                   Importez le plan de l&apos;architecte, obtenez la maison en 3D, visitez-la pièce par pièce puis aménagez l&apos;intérieur.
                 </p>
-                <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                <div className="mt-6 grid gap-3 sm:grid-cols-2">
                   <button onClick={() => fileRef.current?.click()} className="group rounded-2xl bg-ink p-4 text-left text-paper transition hover:-translate-y-0.5">
                     <Upload className="size-5 text-accent" />
                     <div className="mt-3 font-medium">Importer un plan</div>
                     <div className="mt-0.5 text-xs text-paper/60">PDF, image ou DXF</div>
-                  </button>
-                  <button onClick={() => setTool("wall")} className="rounded-2xl bg-white p-4 text-left ring-1 ring-line transition hover:-translate-y-0.5">
-                    <BrickWall className="size-5 text-accent" />
-                    <div className="mt-3 font-medium">Dessiner les murs</div>
-                    <div className="mt-0.5 text-xs text-muted">Sans plan, à main levée</div>
                   </button>
                   <button
                     onClick={() => {
@@ -648,7 +764,21 @@ export default function App() {
                     <div className="mt-0.5 text-xs text-muted">3 chambres, 140 m²</div>
                   </button>
                 </div>
-                <p className="mt-5 text-xs text-muted">
+                <p className="mt-4 text-sm text-muted">
+                  Maison à étage ?{" "}
+                  <button
+                    onClick={() => {
+                      load(SAMPLE_DUPLEX);
+                      setFitKey((k) => k + 1);
+                      setTool("select");
+                    }}
+                    className="font-medium text-accent underline decoration-accent-soft underline-offset-2 hover:decoration-accent"
+                  >
+                    Ouvrir le duplex d&apos;exemple
+                  </button>{" "}
+                  (R+1 : escalier, mezzanine, terrasse).
+                </p>
+                <p className="mt-2 text-xs text-muted">
                   Pas de plan sous la main ? Plans d&apos;essai :{" "}
                   <a href="/exemples/maison-b.pdf" download className="font-medium text-ink underline decoration-sand underline-offset-2 hover:decoration-accent">PDF</a>
                   {" · "}
@@ -684,7 +814,7 @@ export default function App() {
           )}
 
           {/* ---------- commandes 3D ---------- */}
-          {step !== "plan" && walls.length > 0 && rec && (
+          {step !== "plan" && hasWalls && rec && (
             <div className="absolute left-1/2 top-4 z-10 flex -translate-x-1/2 items-center gap-3 rounded-full bg-ink py-1.5 pl-4 pr-1.5 text-sm text-paper shadow-lg">
               <span className="size-2.5 animate-pulse rounded-full bg-red-500" />
               {rec.t0 ? (
@@ -700,9 +830,9 @@ export default function App() {
             </div>
           )}
 
-          {step !== "plan" && walls.length > 0 && !rec && (
+          {step !== "plan" && hasWalls && !rec && (
             <>
-              <div className="absolute left-1/2 top-4 flex -translate-x-1/2 items-center gap-1 rounded-full bg-paper/95 p-1 shadow-lg ring-1 ring-line backdrop-blur">
+              <div className="scroll-soft absolute left-1/2 top-4 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1 overflow-x-auto rounded-full bg-paper/95 p-1 shadow-lg ring-1 ring-line backdrop-blur">
                 {(
                   [
                     { id: "maquette", label: "Maquette", icon: Box },
@@ -733,9 +863,28 @@ export default function App() {
                 })}
                 <span className="mx-1 h-6 w-px bg-line" />
                 {mode === "maquette" && (
-                  <button onClick={() => setCutaway((c) => !c)} className={`${btn} ${cutaway ? "bg-accent-soft text-accent" : "text-muted hover:text-ink"}`} title="Murs coupés à 1,10 m pour voir l'intérieur">
-                    <Scissors className="size-4" /> Coupe
-                  </button>
+                  <>
+                    <button
+                      onClick={() => {
+                        // la coupe montre l'intérieur : elle retire le toit
+                        if (roof) {
+                          setRoof(false);
+                          setCutaway(true);
+                        } else setCutaway((c) => !c);
+                      }}
+                      className={`${btn} ${cutaway && !roof ? "bg-accent-soft text-accent" : "text-muted hover:text-ink"}`} title="Murs coupés à 1,10 m pour voir l'intérieur">
+                      <Scissors className="size-4" /> Coupe
+                    </button>
+                    <button onClick={() => setRoof((v) => !v)} className={`${btn} ${roof ? "bg-accent-soft text-accent" : "text-muted hover:text-ink"}`} title="Toit-terrasse sur la maison (vue de l'extérieur)">
+                      <House className="size-4" /> Toit
+                    </button>
+                    <button onClick={() => setLabelsOn((v) => !v)} className={`${btn} ${labelsOn ? "bg-accent-soft text-accent" : "text-muted hover:text-ink"}`} title="Nom et surface de chaque pièce">
+                      <Tag className="size-4" /> Noms
+                    </button>
+                    <button onClick={() => playBuild()} disabled={building} className={`${btn} text-muted hover:text-ink disabled:opacity-40`} title="Voir la maison se construire depuis le plan">
+                      <Hammer className="size-4" /> Construire
+                    </button>
+                  </>
                 )}
                 <button onClick={enterVR} className={`${btn} text-muted hover:text-ink`} title="Visiter avec un casque VR">
                   <Glasses className="size-4" /> VR
@@ -767,22 +916,62 @@ export default function App() {
 
               {recMenu && (
                 <div className="absolute left-1/2 top-[68px] z-10 w-[340px] -translate-x-1/2 rounded-2xl bg-paper p-3 shadow-xl ring-1 ring-line">
-                  <div className="px-1 pb-2 text-sm font-semibold">Filmer la visite guidée</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button onClick={() => startRecording("paysage")} className="rounded-xl bg-white p-3 text-left ring-1 ring-line transition hover:ring-accent">
+                  <div className="flex gap-1 rounded-full bg-cream p-1 text-xs font-medium">
+                    {(
+                      [
+                        ["visite", "La visite guidée"],
+                        ["construction", "La construction"],
+                      ] as const
+                    ).map(([k, l]) => (
+                      <button key={k} onClick={() => setRecWhat(k)} className={`flex-1 rounded-full py-1.5 ${recWhat === k ? "bg-ink text-paper" : "text-muted hover:text-ink"}`}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button onClick={() => startRecording("paysage", recWhat)} className="rounded-xl bg-white p-3 text-left ring-1 ring-line transition hover:ring-accent">
                       <Monitor className="size-5 text-accent" />
                       <div className="mt-2 text-sm font-medium">Paysage</div>
                       <div className="text-xs text-muted">YouTube, présentation client</div>
                     </button>
-                    <button onClick={() => startRecording("vertical")} className="rounded-xl bg-white p-3 text-left ring-1 ring-line transition hover:ring-accent">
+                    <button onClick={() => startRecording("vertical", recWhat)} className="rounded-xl bg-white p-3 text-left ring-1 ring-line transition hover:ring-accent">
                       <Smartphone className="size-5 text-accent" />
                       <div className="mt-2 text-sm font-medium">Vertical 9:16</div>
                       <div className="text-xs text-muted">Reels, TikTok, statuts</div>
                     </button>
                   </div>
                   <p className="px-1 pt-2 text-xs leading-relaxed text-muted">
-                    La visite guidée repart du début et la vidéo se télécharge à la fin du parcours (ou quand vous l&apos;arrêtez).
+                    {recWhat === "visite"
+                      ? "La visite guidée repart du début et la vidéo se télécharge à la fin du parcours (ou quand vous l'arrêtez)."
+                      : "La maison sort du plan, niveau par niveau, pendant que la caméra tourne autour. La vidéo se télécharge à la fin."}
                   </p>
+                </div>
+              )}
+
+              {multi && mode === "maquette" && (
+                <div className="absolute left-4 top-1/2 z-10 flex -translate-y-1/2 flex-col gap-1 rounded-2xl bg-paper/95 p-1.5 shadow-lg ring-1 ring-line backdrop-blur">
+                  <div className="flex items-center justify-center gap-1 px-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                    <Layers className="size-3" /> Niveaux
+                  </div>
+                  {[...house].reverse().map((L) => {
+                    const on = L.index === shownLevel;
+                    return (
+                      <button
+                        key={L.index}
+                        onClick={() => {
+                          if (step === "interieur") {
+                            patch(switchLevel(useProject.getState().project, L.index));
+                            setSelectedF(null);
+                            setDesignRoom(null);
+                          } else setViewLevel(L.index);
+                        }}
+                        className={`rounded-xl px-3 py-1.5 text-left text-xs font-medium transition ${on ? "bg-ink text-paper" : "text-muted hover:bg-cream hover:text-ink"}`}
+                        title={step === "interieur" ? `Aménager : ${L.name}` : `Voir jusqu'à : ${L.name}`}
+                      >
+                        {L.name}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
@@ -798,10 +987,11 @@ export default function App() {
                     <div key={stopIdx} className="rounded-2xl bg-paper/95 px-5 py-2.5 text-center shadow-lg ring-1 ring-line">
                       <div className="text-[11px] uppercase tracking-wider text-muted">
                         Étape {stopIdx + 1} / {tour.stops.length}
+                        {multi && ` · ${house[tour.stops[stopIdx].level]?.name ?? ""}`}
                       </div>
                       <div className="font-display text-xl font-semibold">{tour.stops[stopIdx].name}</div>
                       {(() => {
-                        const r = rooms.find((x) => x.id === tour.stops[stopIdx].roomId);
+                        const r = allRooms.find((x) => x.id === tour.stops[stopIdx].roomId);
                         return r ? <div className="text-xs text-muted">{fmtArea(Math.abs(polygonArea(r.points)))}</div> : null;
                       })()}
                     </div>
@@ -834,7 +1024,7 @@ export default function App() {
             </>
           )}
 
-          {step !== "plan" && !walls.length && (
+          {step !== "plan" && !hasWalls && (
             <div className="grid size-full place-items-center">
               <div className="text-center">
                 <p className="text-muted">Aucun plan pour l&apos;instant.</p>
@@ -845,27 +1035,47 @@ export default function App() {
             </div>
           )}
 
-          {step !== "plan" && walls.length > 0 && aiOpen && !rec && (
+          {step !== "plan" && hasWalls && aiOpen && !rec && (
             <RenduIA
               canvasRef={canvasRef}
+              capture={captureRef}
+              stops={tour?.stops.map((s) => (multi ? `${house[s.level]?.name} · ${s.name}` : s.name)) ?? []}
+              stopRooms={tour?.stops.map((s) => s.roomId) ?? []}
+              filmRooms={filmRooms}
+              currentStop={stopIdx}
               onClose={() => setAiOpen(false)}
               name={project.name.replace(/[^\p{L}\p{N}-]+/gu, "-") || "maison"}
               view={mode === "maquette" ? "maquette" : "interieur"}
               prepare={async (kind) => {
                 // l'IA comprend mal le dessin du plan plaqué au sol et les pièces vides :
-                // le temps de la capture, vrais sols, meubles (et toit + cadrage pour la façade), puis tout revient
+                // le temps de la capture, vrais sols et meubles, puis tout revient.
+                // Façade : le toit et le cadrage restent, on voit ce qui a été envoyé (bouton Toit pour l'ôter).
                 const p = useProject.getState().project;
                 const prev = { planFloor: p.planFloor, furnished: p.furnished };
                 patch({ planFloor: false, furnished: p.furniture ? p.furnished : true });
-                let restoreCam = () => {};
-                if (kind === "facade") {
-                  setRoofShot(true);
-                  restoreCam = shotRef.current?.() ?? (() => {});
+                const hadRoof = live.current.roof;
+                const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+                // façade et vue en coupe : vue maquette ; pièces : vue intérieure (plafonds, tous les niveaux)
+                const outside = kind !== "interieur";
+                const wasMode = live.current.mode;
+                if (outside && wasMode !== "maquette") {
+                  setMode("maquette");
+                  await wait(700);
+                } else if (!outside && wasMode === "maquette") {
+                  setMode("visite");
+                  await wait(700);
                 }
-                await new Promise((r) => setTimeout(r, 900));
+                if (kind === "facade") {
+                  setRoof(true);
+                  await wait(100);
+                  shotRef.current?.();
+                }
+                if (kind === "aerien") setRoof(false); // vue en coupe : sans toit
+                await wait(900);
                 return () => {
-                  restoreCam();
-                  setRoofShot(false);
+                  if (kind === "aerien" && hadRoof) setRoof(true);
+                  // une pièce filmée depuis la maquette : on y revient
+                  if (!outside && wasMode === "maquette") setMode("maquette");
                   patch(prev);
                 };
               }}
@@ -881,6 +1091,69 @@ export default function App() {
         <aside className="scroll-soft w-[320px] shrink-0 overflow-y-auto border-l border-line bg-paper">
           {step === "plan" && (
             <>
+              <Section
+                title="Niveaux"
+                right={
+                  <button onClick={newLevel} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft" title="Ajouter un étage au-dessus">
+                    <Plus className="size-3.5" /> Étage
+                  </button>
+                }
+              >
+                <div className="space-y-1">
+                  {[...house].reverse().map((L) => {
+                    const on = L.index === level;
+                    return (
+                      <div key={L.index} className={`flex items-center gap-2 rounded-xl px-2.5 py-1.5 ${on ? "bg-ink text-paper" : "bg-white ring-1 ring-line"}`}>
+                        {on ? (
+                          <input
+                            key={L.name}
+                            defaultValue={L.name}
+                            onBlur={(e) => e.target.value.trim() && e.target.value !== L.name && commit((p) => renameLevel(p, L.index, e.target.value.trim()))}
+                            onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                            className="min-w-0 flex-1 bg-transparent text-sm font-medium outline-none"
+                            aria-label="Nom du niveau"
+                          />
+                        ) : (
+                          <button onClick={() => gotoLevel(L.index)} className="min-w-0 flex-1 truncate text-left text-sm font-medium">
+                            {L.name}
+                          </button>
+                        )}
+                        <span className="shrink-0 text-[11px] tabular-nums opacity-70">{L.z > 0 ? `+${fmt(L.z)}` : "sol"}</span>
+                        {multi && (
+                          <button onClick={() => dropLevel(L.index)} className="shrink-0 rounded-md p-0.5 opacity-60 hover:opacity-100" title="Supprimer ce niveau">
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {level > 0 && (
+                  <div className="space-y-2 rounded-xl bg-cream/70 p-2.5">
+                    <p className="text-xs leading-relaxed text-muted">
+                      Le niveau du dessous apparaît en gris. Importez le plan de cet étage avec « Ouvrir » : il est calé dessus automatiquement.
+                    </p>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => alignBelow()} className={`${btn} flex-1 justify-center bg-white px-2 text-xs text-ink ring-1 ring-line hover:bg-sand`} title="Poser les façades de cet étage sur celles du dessous">
+                        <Magnet className="size-3.5" /> Caler
+                      </button>
+                      {(
+                        [
+                          [ArrowLeft, -0.1, 0],
+                          [ArrowUp, 0, -0.1],
+                          [ArrowDown, 0, 0.1],
+                          [ArrowRight, 0.1, 0],
+                        ] as const
+                      ).map(([Icon, dx, dy], k) => (
+                        <button key={k} onClick={() => commit((p) => translateActive(p, { x: dx, y: dy }))} className="grid size-7 place-items-center rounded-lg bg-white ring-1 ring-line hover:bg-sand" title="Décaler de 10 cm">
+                          <Icon className="size-3.5" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </Section>
+
               <Section title={TOOLS.find((t) => t.id === tool)?.label ?? ""}>
                 <p className="text-sm leading-relaxed text-muted">{HELP[tool]}</p>
                 {tool === "wall" && (
@@ -987,6 +1260,29 @@ export default function App() {
                         <span className="text-muted">Surface</span>
                         <span className="tabular-nums">{fmtArea(Math.abs(polygonArea(sel.r.points)))}</span>
                       </div>
+                      {!sel.r.stairs && (
+                        <button
+                          onClick={() => updateRoom(sel.r.id, { stairs: defaultStairs(sel.r) })}
+                          className={`${btn} w-full justify-center bg-cream text-xs text-ink hover:bg-sand`}
+                          title="Volée droite le long du plus grand côté ; elle relie ce niveau à celui du dessus"
+                        >
+                          <Plus className="size-3.5" /> Ajouter un escalier
+                        </button>
+                      )}
+                      {sel.r.stairs && (
+                        <div className="flex gap-1.5 pt-1">
+                          <button
+                            onClick={() => updateRoom(sel.r.id, { stairs: { ...sel.r.stairs!, rot: sel.r.stairs!.rot + Math.PI } })}
+                            className={`${btn} flex-1 justify-center bg-cream px-2 text-xs text-ink hover:bg-sand`}
+                            title="L'escalier monte dans l'autre sens"
+                          >
+                            <ArrowLeftRight className="size-3.5" /> Sens de l&apos;escalier
+                          </button>
+                          <button onClick={() => updateRoom(sel.r.id, { stairs: undefined })} className={`${btn} justify-center bg-cream px-2 text-xs text-ink hover:bg-sand`} title="Retirer l'escalier lu sur le plan">
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </>
                   )}
                 </Section>
@@ -1056,7 +1352,7 @@ export default function App() {
               <div className="p-5">
                 <button
                   onClick={() => goto3d("3d")}
-                  disabled={!walls.length}
+                  disabled={!hasWalls}
                   className="flex w-full items-center justify-center gap-2 rounded-2xl bg-accent py-3 font-medium text-white shadow-sm transition hover:brightness-105 disabled:opacity-40"
                 >
                   <Box className="size-5" /> Voir la maison en 3D
@@ -1073,9 +1369,9 @@ export default function App() {
               <Section title="La maison">
                 <div className="grid grid-cols-3 gap-2 text-center">
                   {[
-                    [rooms.length, "pièces"],
-                    [fmtArea(rooms.reduce((s, r) => s + Math.abs(polygonArea(r.points)), 0)).replace(" m²", ""), "m² habitables"],
-                    [openings.filter((o) => o.kind !== "passage").length, "ouvertures"],
+                    [allRooms.length, "pièces"],
+                    [fmtArea(allRooms.reduce((s, r) => s + Math.abs(polygonArea(r.points)), 0)).replace(" m²", ""), "m² habitables"],
+                    [house.reduce((n, L) => n + L.openings.filter((o) => o.kind !== "passage").length, 0), "ouvertures"],
                   ].map(([v, l]) => (
                     <div key={l as string} className="rounded-xl bg-cream px-2 py-3">
                       <div className="font-display text-xl font-semibold tabular-nums">{v}</div>
@@ -1085,14 +1381,12 @@ export default function App() {
                 </div>
               </Section>
               <Section title="Visiter une pièce">
-                <RoomList
-                  rooms={rooms}
-                  pickLabel="Y aller"
-                  onPick={(r) => {
-                    setWalkAt(roomViewpoint(r, rooms, walls, openings, shownFurniture));
-                    setMode("visite");
-                  }}
-                />
+                {house.map((L) => (
+                  <div key={L.index} className="space-y-2">
+                    {multi && <div className="pt-1 text-xs font-semibold text-muted">{L.name}</div>}
+                    <RoomList rooms={L.rooms} level={L.index} pickLabel="Y aller" onPick={visitRoom} />
+                  </div>
+                ))}
               </Section>
               <div className="p-5">
                 <button
@@ -1139,8 +1433,7 @@ export default function App() {
                 roomId={designRoom}
                 setRoomId={setDesignRoom}
                 onVisit={(r) => {
-                  setWalkAt(roomViewpoint(r, rooms, walls, openings, shownFurniture));
-                  setMode("visite");
+                  visitRoom(r);
                 }}
               />
             </>

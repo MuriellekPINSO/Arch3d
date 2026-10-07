@@ -169,3 +169,114 @@ export function joinWalls(
 
   return { walls, openings };
 }
+
+/** Bouts de murs libres : une porte ou une fenêtre placée dans un angle laisse le mur s'arrêter avant le mur qu'il
+    rejoint (perpendiculaire, ou dans son prolongement). On le prolonge jusque-là, au plus `maxGap` m, et le morceau
+    ajouté devient une ouverture (porte, fenêtre ou simple passage selon le dessin) : les pièces se ferment. */
+export function closeOpenEnds(input: Wall[], openingsIn: Opening[], classify: Classify, maxGap = 2.6) {
+  const segDist = (p: Pt, a: Pt, b: Pt) => {
+    const ab = sub(b, a);
+    const L2 = dot(ab, ab) || 1e-9;
+    const k = Math.max(0, Math.min(1, dot(sub(p, a), ab) / L2));
+    return dist(p, { x: a.x + ab.x * k, y: a.y + ab.y * k });
+  };
+  const touches = (p: Pt, w: Wall, list: Wall[]) => list.some((v) => v.id !== w.id && segDist(p, v.a, v.b) <= (v.thickness + w.thickness) / 2 + 0.05);
+  const short = (w: Wall) => len(sub(w.b, w.a)) < Math.max(0.6, 3 * w.thickness);
+  // bouts de mur courts reliés à aucun vrai mur : des chiffres de cote ou des lettres pris pour des murs
+  // (les deux « 0 » de « 3,00 » se touchent entre eux, pas un mur)
+  const real = input.filter((w) => !short(w));
+  const walls = input.filter((w) => !short(w) || touches(w.a, w, real) || touches(w.b, w, real)).map((w) => ({ ...w }));
+  const kept = new Set(walls.map((w) => w.id));
+  const openings = openingsIn.filter((o) => kept.has(o.wallId)).map((o) => ({ ...o }));
+  for (const w of walls) {
+    if (len(sub(w.b, w.a)) < Math.max(0.8, 4 * w.thickness)) continue; // on ne prolonge que de vrais murs
+    for (const end of ["a", "b"] as const) {
+      const p = w[end];
+      const other = end === "a" ? w.b : w.a;
+      // bout déjà raccordé à un autre mur
+      if (touches(p, w, walls)) continue;
+      const d = norm(sub(p, other)); // vers l'extérieur du mur
+      let best: { s: number; face: number } | null = null;
+      for (const v of walls) {
+        if (v.id === w.id || len(sub(v.b, v.a)) < 0.8) continue;
+        const sv = norm(sub(v.b, v.a));
+        const den = d.x * sv.y - d.y * sv.x;
+        if (Math.abs(den) >= 0.7) {
+          // mur à peu près perpendiculaire : on vise son axe
+          const qp = sub(v.a, p);
+          const s = (qp.x * sv.y - qp.y * sv.x) / den;
+          const q = { x: p.x + d.x * s, y: p.y + d.y * s };
+          const along = dot(sub(q, v.a), sv);
+          if (along < -v.thickness || along > len(sub(v.b, v.a)) + v.thickness) continue;
+          const face = s - v.thickness / 2;
+          if (face <= 0.05 || face > maxGap) continue;
+          if (!best || s < best.s) best = { s, face };
+        } else if (Math.abs(Math.abs(dot(d, sv)) - 1) < 0.002 && Math.abs(w.thickness - v.thickness) < 0.08) {
+          // mur dans le prolongement : on vise son bout le plus proche
+          const n = { x: -d.y, y: d.x };
+          if (Math.abs(dot(sub(v.a, p), n)) > Math.max(0.04, w.thickness * 0.5)) continue;
+          const s = Math.min(dot(sub(v.a, p), d), dot(sub(v.b, p), d));
+          if (s <= 0.05 || s > maxGap) continue;
+          if (!best || s < best.s) best = { s, face: s };
+        }
+      }
+      if (!best) continue;
+      const q = { x: p.x + d.x * best.s, y: p.y + d.y * best.s };
+      const center = { x: p.x + (d.x * best.face) / 2, y: p.y + (d.y * best.face) / 2 };
+      const kind = classify(center, best.face, norm(sub(w.b, w.a)), w.thickness);
+      // rien de dessiné dans le vide (ni battant, ni vitrage) : seulement s'il a la largeur d'une porte
+      if (kind === "passage" && best.face > 1.6) continue;
+      const { height, sill } = OPENING_DEFAULTS[kind];
+      if (end === "a") {
+        // a recule : les positions mesurées depuis a avancent d'autant
+        for (const o of openings) if (o.wallId === w.id) o.t += best.s;
+        w.a = q;
+        openings.push({ id: uid(), wallId: w.id, kind, t: best.face / 2, width: Math.round(best.face * 100) / 100, height, sill });
+      } else {
+        const L = len(sub(w.b, w.a));
+        w.b = q;
+        openings.push({ id: uid(), wallId: w.id, kind, t: L + best.face / 2, width: Math.round(best.face * 100) / 100, height, sill });
+      }
+    }
+  }
+  // murs alignés séparés d'un vide (porte entre deux murs dans le prolongement l'un de l'autre), même si chacun
+  // de leurs bouts touche déjà un mur perpendiculaire : on prolonge le premier jusqu'au second
+  const crosses = (p: Pt, q: Pt, skip: Wall[]) =>
+    walls.some((v) => {
+      if (skip.includes(v)) return false;
+      const r = sub(q, p);
+      const sv = sub(v.b, v.a);
+      const den = r.x * sv.y - r.y * sv.x;
+      if (Math.abs(den) < 1e-9) return false;
+      const qp = sub(v.a, p);
+      const t = (qp.x * sv.y - qp.y * sv.x) / den;
+      const u = (qp.x * r.y - qp.y * r.x) / den;
+      return t > 0.02 && t < 0.98 && u >= 0 && u <= 1;
+    });
+  for (const A of walls) {
+    if (len(sub(A.b, A.a)) < Math.max(0.8, 4 * A.thickness)) continue;
+    const d = norm(sub(A.b, A.a));
+    const n = { x: -d.y, y: d.x };
+    const LA = len(sub(A.b, A.a));
+    let next: { B: Wall; s: number } | null = null;
+    for (const B of walls) {
+      if (B === A || len(sub(B.b, B.a)) < 0.8 || Math.abs(A.thickness - B.thickness) > 0.08) continue;
+      if (Math.abs(Math.abs(dot(d, norm(sub(B.b, B.a)))) - 1) > 0.002) continue;
+      if (Math.abs(dot(sub(B.a, A.a), n)) > Math.max(0.05, Math.max(A.thickness, B.thickness) * 0.5)) continue;
+      const s = Math.min(dot(sub(B.a, A.a), d), dot(sub(B.b, A.a), d)) - LA; // vide entre A et B
+      if (s < 0.3 || s > maxGap) continue;
+      if (!next || s < next.s) next = { B, s };
+    }
+    if (!next) continue;
+    const p = A.b;
+    const q = { x: p.x + d.x * next.s, y: p.y + d.y * next.s };
+    if (crosses(p, q, [A, next.B])) continue; // un mur passe dans le vide : ce ne sont pas les deux bords d'une ouverture
+    const center = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+    const kind = classify(center, next.s, d, A.thickness);
+    if (kind === "passage" && next.s > 1.6) continue;
+    const { height, sill } = OPENING_DEFAULTS[kind];
+    A.b = q;
+    openings.push({ id: uid(), wallId: A.id, kind, t: LA + next.s / 2, width: Math.round(next.s * 100) / 100, height, sill });
+  }
+  return { walls, openings };
+}

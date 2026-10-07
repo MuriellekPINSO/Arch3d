@@ -82,3 +82,77 @@ export const SAMPLE_PROJECT: Project = {
     rect("r-cuisine", "Cuisine", "cuisine", 9 + i, 5.4 + i, 14 - e, 10 - e),
   ],
 };
+
+/* Duplex d'exemple : la villa, avec un escalier dans le séjour et un étage (2 chambres, salle d'eau, bureau,
+   mezzanine au-dessus du séjour, terrasse au-dessus de la cuisine). */
+
+const G = 1.1; // garde-corps de la terrasse
+const poly = (id: string, name: string, type: RoomType, pts: [number, number][]): Room => ({
+  id,
+  name,
+  type,
+  points: pts.map(([x, y]) => ({ x, y })),
+});
+
+export const SAMPLE_DUPLEX: Project = {
+  ...SAMPLE_PROJECT,
+  name: "Duplex d'exemple — Fidjrossè",
+  rooms: SAMPLE_PROJECT.rooms.map((r) =>
+    // volée droite le long du mur du couloir, qui monte vers l'est
+    r.id === "r-sejour" ? { ...r, stairs: { x: 2.6, y: 5.4 + i + 0.5, w: 4.2, d: 1.0, rot: 0 } } : r,
+  ),
+  level: 0,
+  levels: [
+    { name: "Rez-de-chaussée" },
+    {
+      name: "Étage",
+      data: {
+        background: null,
+        walls: [
+          wall("u-top", 0, 0, 14, 0, EXT),
+          wall("u-right", 14, 0, 14, 6, EXT),
+          wall("u-bottom", 8, 10, 0, 10, EXT),
+          wall("u-left", 0, 10, 0, 0, EXT),
+          { ...wall("u-garde-e", 14, 6, 14, 10, EXT), height: G },
+          { ...wall("u-garde-s", 14, 10, 8, 10, EXT), height: G },
+          wall("u-nuit", 0, 4, 14, 4),
+          wall("u-ch3", 4.5, 0, 4.5, 4),
+          wall("u-ch4", 9, 0, 9, 4),
+          wall("u-sde", 11.5, 0, 11.5, 4),
+          wall("u-terrasse-o", 8, 6, 8, 10, 0.2),
+          wall("u-terrasse-n", 8, 6, 14, 6, 0.2),
+        ],
+        openings: [
+          op("uo-ch3", "u-nuit", "door", 2.2),
+          op("uo-ch4", "u-nuit", "door", 6.8),
+          op("uo-sde", "u-nuit", "door", 10.2, { width: 0.8 }),
+          op("uo-bureau", "u-nuit", "door", 12.7),
+          op("uo-terrasse", "u-terrasse-o", "baie", 2.0, { width: 2.4 }),
+          op("uf-ch3", "u-top", "window", 2.2, { width: 1.4 }),
+          op("uf-ch4", "u-top", "window", 6.8, { width: 1.4 }),
+          op("uf-sde", "u-top", "window", 10.2, { width: 0.6, height: 0.6, sill: 1.5 }),
+          op("uf-bureau", "u-top", "window", 12.7),
+          op("uf-bureau-b", "u-right", "window", 2.0),
+          op("uf-ch3-b", "u-left", "window", 8.0),
+          op("uf-mezz", "u-left", "window", 2.0, { width: 1.6 }),
+          op("uf-mezz-b", "u-bottom", "window", 4.0, { width: 1.6 }),
+        ],
+        rooms: [
+          rect("u-r-ch3", "Chambre 3", "chambre", e, e, 4.5 - i, 4 - i),
+          rect("u-r-ch4", "Chambre 4", "chambre", 4.5 + i, e, 9 - i, 4 - i),
+          rect("u-r-sde", "Salle d'eau", "salle_de_bain", 9 + i, e, 11.5 - i, 4 - i),
+          rect("u-r-bureau", "Bureau", "bureau", 11.5 + i, e, 14 - e, 4 - i),
+          poly("u-r-mezz", "Mezzanine", "salon", [
+            [e, 4 + i],
+            [14 - e, 4 + i],
+            [14 - e, 6 - 0.1],
+            [8 - 0.1, 6 - 0.1],
+            [8 - 0.1, 10 - e],
+            [e, 10 - e],
+          ]),
+          rect("u-r-terrasse", "Terrasse", "terrasse", 8 + 0.1, 6 + 0.1, 14 - e, 10 - e),
+        ],
+      },
+    },
+  ],
+};

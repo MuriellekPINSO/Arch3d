@@ -226,23 +226,24 @@ function Piece({ f, s }: { f: Furniture; s: InteriorStyle }) {
     case "plante":
       return <Plant size={Math.min(w, d)} s={s} />;
     case "escalier": {
-      // volée droite qui monte le long de x, marches de 17 cm
-      const n = 16;
+      // volée droite qui monte le long de x, marches d'environ 17 cm jusqu'au niveau du dessus
+      const n = f.rise ? Math.max(10, Math.round(f.rise / 0.175)) : 16;
+      const riser = f.rise ? f.rise / n : 0.17;
       const tread = w / n;
       return (
         <group>
           {Array.from({ length: n }, (_, i) => {
-            const h = (i + 1) * 0.17;
+            const h = (i + 1) * riser;
             return <Box key={i} s={[tread + 0.002, h, d]} p={[-w / 2 + (i + 0.5) * tread, h / 2, 0]} m={i % 2 ? wood : { color: s.wood, roughness: 0.6 }} r={0.005} />;
           })}
           {/* main courante côté vide */}
           {Array.from({ length: 5 }, (_, i) => {
             const x = -w / 2 + (i + 0.5) * (w / 5);
-            const base = ((x + w / 2) / tread) * 0.17;
+            const base = ((x + w / 2) / tread) * riser;
             return <Box key={`p${i}`} s={[0.03, 0.9, 0.03]} p={[x, base + 0.45, d / 2 - 0.04]} m={{ color: s.metal, metalness: 0.6 }} r={0.005} />;
           })}
-          <mesh position={[0, n * 0.17 / 2 + 0.9, d / 2 - 0.04]} rotation-z={Math.atan2(n * 0.17, w)}>
-            <boxGeometry args={[Math.hypot(w, n * 0.17), 0.04, 0.05]} />
+          <mesh position={[0, n * riser / 2 + 0.9, d / 2 - 0.04]} rotation-z={Math.atan2(n * riser, w)}>
+            <boxGeometry args={[Math.hypot(w, n * riser), 0.04, 0.05]} />
             <meshStandardMaterial color={s.metal} metalness={0.6} roughness={0.35} />
           </mesh>
         </group>

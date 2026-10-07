@@ -69,8 +69,24 @@ export interface Background {
   calibrated?: boolean; // échelle réglée sur une cote connue (sinon estimée)
 }
 
+/** Contenu d'un niveau (rez-de-chaussée, étage…). */
+export interface LevelContent {
+  walls: Wall[];
+  openings: Opening[];
+  rooms: Room[];
+  background: Background | null;
+  furniture?: import("./furnish").Furniture[];
+}
+
+export interface Level {
+  name: string;
+  /** contenu des niveaux non actifs ; celui du niveau actif est dans walls / openings / rooms… du projet */
+  data?: LevelContent;
+}
+
 export interface Project {
   name: string;
+  /* niveau actif (celui qu'on dessine et qu'on aménage) */
   walls: Wall[];
   openings: Opening[];
   rooms: Room[];
@@ -81,6 +97,10 @@ export interface Project {
   furniture?: import("./furnish").Furniture[];
   /** le dessin du plan est plaqué au sol en 3D (meubles dessinés, jardin, voiture…) */
   planFloor?: boolean;
+  /** maison à étages : tous les niveaux, du rez-de-chaussée au dernier (absent = un seul niveau) */
+  levels?: Level[];
+  /** indice du niveau actif dans `levels` */
+  level?: number;
 }
 
 export const ROOM_LABELS: Record<RoomType, string> = {
