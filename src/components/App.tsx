@@ -15,6 +15,7 @@ import { STYLES } from "@/lib/styles";
 import { moveF, removeF, rotateF } from "@/lib/design";
 import DesignPanel from "./DesignPanel";
 import RenduIA from "./RenduIA";
+import Logo from "./Logo";
 import type { CaptureAPI } from "./three/capture";
 import { furnish } from "@/lib/furnish";
 import { buildTour, roomViewpoint, yawTowards } from "@/lib/tour";
@@ -581,11 +582,9 @@ export default function App() {
       {/* ---------- en-tête ---------- */}
       <header className="flex h-16 shrink-0 items-center gap-4 border-b border-line bg-paper px-4">
         <div className="flex items-center gap-2.5">
-          <div className="grid size-9 place-items-center rounded-xl bg-ink text-paper">
-            <House className="size-5" strokeWidth={1.8} />
-          </div>
+          <Logo className="h-9 w-auto" title="Xwé" />
           <div className="leading-tight">
-            <div className="font-display text-[17px] font-semibold">Plan3D</div>
+            <div className="font-display text-[19px] font-semibold tracking-tight">Xwé</div>
             <input
               key={project.name}
               defaultValue={project.name}
@@ -741,9 +740,10 @@ export default function App() {
           {step === "plan" && empty && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center p-6">
               <div className="pointer-events-auto w-full max-w-xl rounded-3xl bg-paper/95 p-8 shadow-[0_20px_60px_-20px_rgba(42,38,32,0.35)] ring-1 ring-line backdrop-blur">
-                <h1 className="font-display text-3xl font-semibold tracking-tight">Du plan à la visite 3D</h1>
+                <Logo detailed className="mb-4 h-20 w-auto" />
+                <h1 className="font-display text-3xl font-semibold tracking-tight">Du plan à la visite réaliste</h1>
                 <p className="mt-2 text-[15px] leading-relaxed text-muted">
-                  Importez le plan de l&apos;architecte, obtenez la maison en 3D, visitez-la pièce par pièce puis aménagez l&apos;intérieur.
+                  Importez votre plan : la maison apparaît en 3D, se visite pièce par pièce, s&apos;aménage, puis devient photo et vidéo réalistes.
                 </p>
                 <div className="mt-6 grid gap-3 sm:grid-cols-2">
                   <button onClick={() => fileRef.current?.click()} className="group rounded-2xl bg-ink p-4 text-left text-paper transition hover:-translate-y-0.5">
