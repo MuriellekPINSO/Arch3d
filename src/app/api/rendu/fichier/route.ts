@@ -21,14 +21,17 @@ async function fetchFile(filename: string, subfolder: string, type: string) {
   return file;
 }
 
+// ces réponses vont à une balise <img> ou <video> : pas d'en-tête x-lang, on suit la langue du navigateur
+const say = (request: Request, fr: string, en: string) => (/^fr\b/i.test(request.headers.get("Accept-Language") ?? "fr") ? fr : en);
+
 export async function GET(request: Request) {
-  if (!COMFY) return new Response("non configuré", { status: 503 });
+  if (!COMFY) return new Response(say(request, "non configuré", "not configured"), { status: 503 });
   const q = new URL(request.url).searchParams;
   const filename = q.get("filename") ?? "";
   const subfolder = q.get("subfolder") ?? "";
   const type = q.get("type") ?? "output";
   if (!/^[\w.-]+$/.test(filename) || !/^[\w/-]*$/.test(subfolder) || subfolder.includes("..") || type !== "output")
-    return new Response("refusé", { status: 400 });
+    return new Response(say(request, "refusé", "refused"), { status: 400 });
   const { buf, type: mime } = await fetchFile(filename, subfolder, type);
   const size = buf.byteLength;
   const headers = { "Content-Type": mime, "Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600" };

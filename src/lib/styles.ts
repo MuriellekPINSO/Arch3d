@@ -7,7 +7,9 @@ export type { FloorKind };
 export interface InteriorStyle {
   id: string;
   name: string;
+  nameEn: string;
   description: string;
+  descriptionEn: string;
   wall: string; // peinture des murs intérieurs
   exterior: string; // enduit extérieur
   floors: Partial<Record<RoomType, { kind: FloorKind; color: string }>> & { default: { kind: FloorKind; color: string } };
@@ -22,7 +24,9 @@ export const STYLES: InteriorStyle[] = [
   {
     id: "contemporain",
     name: "Contemporain clair",
+    nameEn: "Light contemporary",
     description: "Murs blancs, parquet chêne, tissus gris et touches de noir.",
+    descriptionEn: "White walls, oak flooring, grey fabrics and touches of black.",
     wall: "#f4f1ea",
     exterior: "#e9e2d4",
     floors: {
@@ -40,7 +44,9 @@ export const STYLES: InteriorStyle[] = [
   {
     id: "afro-chic",
     name: "Afro-chic",
+    nameEn: "Afro-chic",
     description: "Terre cuite, bois sombre, moutarde et indigo, inspirés du wax.",
+    descriptionEn: "Terracotta, dark wood, mustard and indigo, inspired by wax prints.",
     wall: "#efe2cf",
     exterior: "#d9b48f",
     floors: {
@@ -57,7 +63,9 @@ export const STYLES: InteriorStyle[] = [
   {
     id: "minimaliste",
     name: "Minimaliste béton",
+    nameEn: "Minimal concrete",
     description: "Béton ciré, blanc pur, bois clair : épuré et lumineux.",
+    descriptionEn: "Polished concrete, pure white, light wood: clean and bright.",
     wall: "#fbfbfa",
     exterior: "#d6d6d3",
     floors: { default: { kind: "beton", color: "#b9b7b2" } },
@@ -70,7 +78,9 @@ export const STYLES: InteriorStyle[] = [
   {
     id: "tropical",
     name: "Tropical",
+    nameEn: "Tropical",
     description: "Pierre claire, rotin, verts profonds et beaucoup de plantes.",
+    descriptionEn: "Light stone, rattan, deep greens and plenty of plants.",
     wall: "#f6f3ea",
     exterior: "#efe6d2",
     floors: {

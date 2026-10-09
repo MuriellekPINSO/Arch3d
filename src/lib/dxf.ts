@@ -2,6 +2,7 @@ import DxfParser from "dxf-parser";
 import type { Opening, OpeningKind, Pt, Wall } from "./types";
 import { dist } from "./geometry";
 import { wallsFromLines } from "./linework";
+import { tx } from "./i18n";
 
 /* Import DXF (AutoCAD, ArchiCAD, Revit… exportent tous en DXF).
    1. on lit les traits (LINE, LWPOLYLINE, POLYLINE) des calques de murs s'ils sont nommés ainsi ;
@@ -26,7 +27,7 @@ export interface DxfResult {
 export function importDxf(text: string, height = 2.8): DxfResult {
   const parser = new DxfParser();
   const dxf = parser.parseSync(text);
-  if (!dxf) throw new Error("Fichier DXF illisible.");
+  if (!dxf) throw new Error(tx("Fichier DXF illisible.", "Unreadable DXF file."));
 
   const segs: Seg[] = [];
   const arcs: { c: Pt; r: number }[] = [];
@@ -56,13 +57,13 @@ export function importDxf(text: string, height = 2.8): DxfResult {
       arcs.push({ c: { x: c.x, y: c.y }, r: e.radius as number });
     }
   }
-  if (!segs.length) throw new Error("Aucun trait trouvé dans ce DXF.");
+  if (!segs.length) throw new Error(tx("Aucun trait trouvé dans ce DXF.", "No lines found in this DXF."));
 
   // unité : en-tête $INSUNITS, sinon déduite de l'étendue du dessin
   const ext = segs.reduce((m, s) => Math.max(m, Math.abs(s.a.x), Math.abs(s.a.y), Math.abs(s.b.x), Math.abs(s.b.y)), 0);
   const insunits = Number((dxf.header as Record<string, unknown>)?.$INSUNITS ?? 0);
   const k = UNIT[insunits] ?? (ext > 2000 ? 0.001 : ext > 200 ? 0.01 : 1);
-  const unit = k === 0.001 ? "mm" : k === 0.01 ? "cm" : k === 1 ? "m" : "pouces/pieds";
+  const unit = k === 0.001 ? "mm" : k === 0.01 ? "cm" : k === 1 ? "m" : tx("pouces/pieds", "inches/feet");
 
   const layers = [...new Set(segs.map((s) => s.layer))];
   const wallLayers = layers.filter((l) => WALL_LAYER.test(l));

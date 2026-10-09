@@ -1,4 +1,5 @@
 import type { Opening, Pt, Room, Wall } from "./types";
+import { useLang } from "./i18n";
 
 export const add = (a: Pt, b: Pt): Pt => ({ x: a.x + b.x, y: a.y + b.y });
 export const sub = (a: Pt, b: Pt): Pt => ({ x: a.x - b.x, y: a.y - b.y });
@@ -152,8 +153,10 @@ export function pointSegDist(p: Pt, a: Pt, b: Pt) {
   return dist(p, lerp(a, b, t));
 }
 
-export const fmt = (m: number) => `${m.toFixed(2).replace(".", ",")} m`;
-export const fmtArea = (m2: number) => `${m2.toFixed(1).replace(".", ",")} m²`;
+// virgule décimale en français, point en anglais
+const dec = (s: string) => (useLang.getState().lang === "en" ? s : s.replace(".", ","));
+export const fmt = (m: number) => `${dec(m.toFixed(2))} m`;
+export const fmtArea = (m2: number) => `${dec(m2.toFixed(1))} m²`;
 
 /** Polygone décalé de d vers l'extérieur (côtés repoussés le long de leur normale, sommets recalculés). */
 export function offsetPolygon(pts: Pt[], d: number): Pt[] {

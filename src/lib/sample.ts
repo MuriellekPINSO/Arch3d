@@ -1,5 +1,6 @@
 import type { Opening, OpeningKind, Project, Room, RoomType, Wall } from "./types";
 import { OPENING_DEFAULTS } from "./types";
+import { useLang } from "./i18n";
 
 /* Villa d'exemple, 14 × 10 m : 3 chambres, salle de bain, couloir, séjour, cuisine. */
 
@@ -156,3 +157,41 @@ export const SAMPLE_DUPLEX: Project = {
     },
   ],
 };
+
+/* En anglais, les exemples s'ouvrent avec des noms anglais (projet, niveaux, pièces). */
+const EN_NAMES: Record<string, string> = {
+  "Villa d'exemple — Fidjrossè": "Sample villa, Fidjrossè",
+  "Duplex d'exemple — Fidjrossè": "Sample duplex, Fidjrossè",
+  "Rez-de-chaussée": "Ground floor",
+  "Étage": "Upper floor",
+  "Chambre 1": "Bedroom 1",
+  "Chambre 2": "Bedroom 2",
+  "Chambre 3": "Bedroom 3",
+  "Chambre 4": "Bedroom 4",
+  "Chambre parentale": "Master bedroom",
+  "Salle de bain": "Bathroom",
+  "Salle d'eau": "Shower room",
+  Couloir: "Hallway",
+  Séjour: "Living room",
+  Cuisine: "Kitchen",
+  Bureau: "Office",
+  Mezzanine: "Mezzanine",
+  Terrasse: "Terrace",
+};
+
+function inLang(p: Project): Project {
+  if (useLang.getState().lang !== "en") return p;
+  const t = (n: string) => EN_NAMES[n] ?? n;
+  const named = (rooms: Room[]) => rooms.map((r) => ({ ...r, name: t(r.name) }));
+  return {
+    ...p,
+    name: t(p.name),
+    rooms: named(p.rooms),
+    levels: p.levels?.map((l) => ({ ...l, name: t(l.name), ...(l.data ? { data: { ...l.data, rooms: named(l.data.rooms) } } : {}) })),
+  };
+}
+
+/** Villa d'exemple, nommée dans la langue de l'interface. */
+export const sampleProject = (): Project => inLang(SAMPLE_PROJECT);
+/** Duplex d'exemple, nommé dans la langue de l'interface. */
+export const sampleDuplex = (): Project => inLang(SAMPLE_DUPLEX);

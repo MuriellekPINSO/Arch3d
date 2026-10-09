@@ -118,11 +118,28 @@ export const ROOM_LABELS: Record<RoomType, string> = {
   autre: "Autre",
 };
 
+export const ROOM_LABELS_EN: Record<RoomType, string> = {
+  salon: "Living room",
+  chambre: "Bedroom",
+  cuisine: "Kitchen",
+  salle_de_bain: "Bathroom",
+  wc: "Toilet",
+  salle_a_manger: "Dining room",
+  bureau: "Office",
+  couloir: "Hallway / entrance",
+  terrasse: "Terrace",
+  garage: "Garage",
+  escalier: "Stairs",
+  autre: "Other",
+};
+
 export const OPENING_DEFAULTS: Record<OpeningKind, { width: number; height: number; sill: number; label: string }> = {
   door: { width: 0.9, height: 2.1, sill: 0, label: "Porte" },
   window: { width: 1.2, height: 1.2, sill: 1.0, label: "Fenêtre" },
   baie: { width: 2.4, height: 2.2, sill: 0, label: "Baie vitrée" },
   passage: { width: 1.4, height: 2.2, sill: 0, label: "Passage" },
 };
+
+export const OPENING_LABELS_EN: Record<OpeningKind, string> = { door: "Door", window: "Window", baie: "Glass door", passage: "Opening" };
 
 export const uid = () => Math.random().toString(36).slice(2, 10);

@@ -12,6 +12,7 @@ import type { Furniture } from "@/lib/furnish";
 import { onFlight, type HouseLevel } from "@/lib/levels";
 import type { Tour } from "@/lib/tour";
 import { EYE, PITCH, TOUR_FOV, TourPlayer } from "@/lib/tourPlayer";
+import { tx } from "@/lib/i18n";
 import House3D from "./House3D";
 import { createCapture, type CaptureAPI } from "./capture";
 import { BuildClock, buildDuration } from "./build";
@@ -154,19 +155,23 @@ function TourControls({
 }
 
 /* ---------- caméra selon le mode ---------- */
-function CameraMode({ mode, overview }: { mode: ViewMode; overview: [number, number, number] }) {
+function CameraMode({ mode, overview, center }: { mode: ViewMode; overview: [number, number, number]; center: [number, number, number] }) {
   const get = useThree((s) => s.get);
+  // écran en hauteur (téléphone, panneau ouvert ou fermé) : le champ horizontal est étroit, on recule pour voir toute la maison
+  const shape = useThree((s) => Math.round((s.size.width / Math.max(1, s.size.height)) * 4) / 4);
   useEffect(() => {
-    const { camera, set } = get();
+    const { camera, set, size } = get();
     const cam = camera as THREE.PerspectiveCamera;
     cam.fov = mode === "maquette" ? 40 : TOUR_FOV;
     if (mode === "maquette") {
-      cam.position.set(...overview);
+      const aspect = size.width / Math.max(1, size.height);
+      const k = Math.min(2.2, Math.max(1, 1.15 / aspect));
+      cam.position.set(...(overview.map((v, i) => center[i] + (v - center[i]) * k) as [number, number, number]));
       cam.rotation.order = "XYZ";
     }
     cam.updateProjectionMatrix();
     set({});
-  }, [mode, overview, get]);
+  }, [mode, overview, center, shape, get]);
   return null;
 }
 
@@ -338,7 +343,7 @@ function Exporter({ target, exportRef }: { target: React.RefObject<THREE.Group |
           const blob = new Blob([res as ArrayBuffer], { type: "model/gltf-binary" });
           const a = document.createElement("a");
           a.href = URL.createObjectURL(blob);
-          a.download = "maison.glb";
+          a.download = tx("maison.glb", "house.glb");
           a.click();
           setTimeout(() => URL.revokeObjectURL(a.href), 2000);
         },
@@ -460,6 +465,7 @@ export default function Viewer3D({
     [levels, top],
   );
   const overview = useMemo<[number, number, number]>(() => [c.x + c.r * 0.9, c.r * 1.05 + c.top * 0.3, c.z + c.r * 1.1], [c.x, c.z, c.r, c.top]);
+  const center = useMemo<[number, number, number]>(() => [c.x, 0, c.z], [c.x, c.z]);
   const shown = mode === "maquette" && !roof ? Math.min(showLevel, levels.length - 1) : levels.length - 1;
   const floorY = levels[shown]?.z ?? 0;
   // noms des pièces du niveau regardé, au-dessus des murs coupés (ou entiers)
@@ -479,7 +485,9 @@ export default function Viewer3D({
     <div className="relative size-full">
     <Canvas
       shadows
-      dpr={[1, 2]}
+      // écran tactile : le doigt pilote la 3D, pas le défilement de la page ; densité plafonnée pour les téléphones
+      style={{ touchAction: "none" }}
+      dpr={[1, typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches ? 1.5 : 2]}
       camera={{ position: overview, fov: 40, near: 0.05, far: 500 }}
       gl={{ antialias: true, preserveDrawingBuffer: true }}
       onCreated={({ scene, gl }) => {
@@ -542,7 +550,7 @@ export default function Viewer3D({
               target={[c.x, floorY, c.z]}
               maxPolarAngle={Math.PI / 2.1}
               minDistance={3}
-              maxDistance={c.r * 4}
+              maxDistance={c.r * 6}
               enableDamping
               autoRotate={building}
               autoRotateSpeed={1.2}
@@ -552,7 +560,7 @@ export default function Viewer3D({
         )}
         {mode === "visite" && <WalkControls start={walkStart} levels={levels} origin={originRef} />}
         {mode === "guidee" && tour && <TourControls tour={tour} playing={playing} onStop={onStop} onEnd={onTourEnd} origin={originRef} />}
-        <CameraMode mode={mode} overview={overview} />
+        <CameraMode mode={mode} overview={overview} center={center} />
         {shotRef && mode === "maquette" && <ShotCamera shotRef={shotRef} c={c} />}
         {design && mode === "maquette" && <DesignDrag startRef={startDrag} onMove={onDragMove} onEnd={onDragEnd} elevation={levels[design.level]?.z ?? 0} />}
         <BuildDriver clockRef={buildClock} build={build} levels={levels.length} onEnd={onBuildEnd} />

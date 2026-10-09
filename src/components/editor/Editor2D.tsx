@@ -1,8 +1,10 @@
 "use client";
-/* Éditeur de plan en SVG, en mètres. Molette : zoom ; clic droit / milieu / espace + glisser : déplacer la vue. */
+/* Éditeur de plan en SVG, en mètres. Molette : zoom ; clic droit / milieu / espace + glisser : déplacer la vue.
+   Au doigt : glisser déplace, deux doigts zooment, un tap applique l'outil. */
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { Opening, OpeningKind, Pt, Room, Wall } from "@/lib/types";
-import { OPENING_DEFAULTS, ROOM_LABELS, uid } from "@/lib/types";
+import { OPENING_DEFAULTS, uid } from "@/lib/types";
+import { roomLabel, useTr } from "@/lib/i18n";
 import { useProject } from "@/lib/store";
 import {
   add, dist, fmt, fmtArea, mul, perp, pointAtWall, polygonArea, projectOnWall, roomAnchor, sub, wallDir, wallLength,
@@ -38,6 +40,7 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
   const addRoom = useProject((s) => s.addRoom);
   const commit = useProject((s) => s.commit);
   const { walls, openings, rooms, background } = project;
+  const tr = useTr();
 
   const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState({ s: 40, ox: 80, oy: 80 }); // px par mètre, décalage en px
@@ -69,7 +72,9 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
     const ys = pts.map((p) => p.y);
     const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
     const r = el.getBoundingClientRect();
-    const s = Math.min((r.width - 120) / Math.max(1, x1 - x0), (r.height - 120) / Math.max(1, y1 - y0));
+    // marge autour du dessin : plus étroite sur un petit écran
+    const m = Math.min(120, r.width * 0.1, r.height * 0.1);
+    const s = Math.min((r.width - m) / Math.max(1, x1 - x0), (r.height - m) / Math.max(1, y1 - y0));
     setView({ s, ox: (r.width - (x1 - x0) * s) / 2 - x0 * s, oy: (r.height - (y1 - y0) * s) / 2 - y0 * s });
   }, [walls, background, ghost]);
   const onFit = useEffectEvent(fit);
@@ -119,15 +124,20 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
     [walls, view.s],
   );
 
-  const openingPreview = useMemo(() => {
-    if (!hover || !["door", "window", "baie", "passage"].includes(tool)) return null;
-    const nw = nearestWall(hover);
-    if (!nw) return null;
-    const kind = tool as OpeningKind;
-    const width = Math.min(OPENING_DEFAULTS[kind].width, wallLength(nw.w) - 0.1);
-    const t = Math.max(width / 2 + 0.05, Math.min(wallLength(nw.w) - width / 2 - 0.05, Math.round(nw.t * 20) / 20));
-    return { w: nw.w, t, width, kind };
-  }, [hover, tool, nearestWall]);
+  /** ouverture qui serait posée en ce point (mur le plus proche, centrée sur le point) */
+  const previewAt = useCallback(
+    (p: Pt | null) => {
+      if (!p || !["door", "window", "baie", "passage"].includes(tool)) return null;
+      const nw = nearestWall(p);
+      if (!nw) return null;
+      const kind = tool as OpeningKind;
+      const width = Math.min(OPENING_DEFAULTS[kind].width, wallLength(nw.w) - 0.1);
+      const t = Math.max(width / 2 + 0.05, Math.min(wallLength(nw.w) - width / 2 - 0.05, Math.round(nw.t * 20) / 20));
+      return { w: nw.w, t, width, kind };
+    },
+    [tool, nearestWall],
+  );
+  const openingPreview = useMemo(() => previewAt(hover), [hover, previewAt]);
 
   // clavier : Échap termine le mur en cours, Suppr efface la sélection
   useEffect(() => {
@@ -166,35 +176,37 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
     });
   };
 
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button === 1 || e.button === 2 || space.current) {
-      pan.current = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy };
-      setPanning(true);
-      (e.target as Element).setPointerCapture?.(e.pointerId);
-      return;
-    }
-    const p = toWorld(e.clientX, e.clientY);
-
-    if (tool === "select") {
-      // poignée d'extrémité du mur sélectionné ?
-      const sw = walls.find((w) => w.id === selected);
-      if (sw) {
-        for (const end of ["a", "b"] as const) {
-          if (dist(p, sw[end]) < 10 / view.s) {
-            setDrag({ wallId: sw.id, end, from: sw[end], to: sw[end] });
-            return;
-          }
-        }
+  /** poignée d'extrémité du mur sélectionné sous le pointeur : on commence à la tirer */
+  const grabHandle = (p: Pt) => {
+    const sw = walls.find((w) => w.id === selected);
+    if (!sw) return false;
+    for (const end of ["a", "b"] as const) {
+      if (dist(p, sw[end]) < (touchUsed.current ? 22 : 10) / view.s) {
+        setDrag({ wallId: sw.id, end, from: sw[end], to: sw[end] });
+        return true;
       }
+    }
+    return false;
+  };
+
+  /** l'action de l'outil en un point du plan ; pour la sélection, dit si quelque chose a été touché */
+  const act = (p: Pt, detail: number): boolean => {
+    if (tool === "select") {
       const op = openings.find((o) => {
         const w = walls.find((x) => x.id === o.wallId);
         if (!w) return false;
         const pr = projectOnWall(p, w);
         return pr.d < w.thickness / 2 + 6 / view.s && Math.abs(pr.t - o.t) < o.width / 2;
       });
-      if (op) return onSelect(op.id);
+      if (op) {
+        onSelect(op.id);
+        return true;
+      }
       const wl = walls.find((w) => projectOnWall(p, w).d < w.thickness / 2 + 4 / view.s);
-      if (wl) return onSelect(wl.id);
+      if (wl) {
+        onSelect(wl.id);
+        return true;
+      }
       const rm = [...rooms].reverse().find((r) => {
         // point dans le polygone
         let inside = false;
@@ -205,54 +217,143 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
         return inside;
       });
       onSelect(rm?.id ?? null);
-      if (!rm) {
+      return !!rm;
+    }
+
+    if (tool === "wall") {
+      const s = snap(p, chain).p;
+      if (!chain) {
+        setChain(s);
+        return true;
+      }
+      if (dist(s, chain) < 0.05) {
+        setChain(null);
+        return true;
+      }
+      addWalls([{ id: uid(), a: chain, b: s, thickness: wallThickness, height: wallHeight }]);
+      // double-clic : le tracé s'arrête là
+      setChain(detail >= 2 ? null : s);
+      return true;
+    }
+
+    const pv = previewAt(p);
+    if (pv) {
+      const { w, t, width, kind } = pv;
+      const clash = openings.some((o) => o.wallId === w.id && Math.abs(o.t - t) < (o.width + width) / 2);
+      if (clash) {
+        onMessage(tr("Il y a déjà une ouverture à cet endroit.", "There is already an opening here."));
+        return true;
+      }
+      const d = OPENING_DEFAULTS[kind];
+      const o: Opening = { id: uid(), wallId: w.id, kind, t, width, height: d.height, sill: d.sill };
+      addOpening(o);
+      return true;
+    }
+
+    if (tool === "room") {
+      const poly = detectRoom(p, walls);
+      if (!poly) {
+        onMessage(tr("Zone non fermée : les murs doivent entourer complètement la pièce.", "Open area: the walls must fully enclose the room."));
+        return true;
+      }
+      const n = rooms.filter((r) => r.type === roomType).length + 1;
+      addRoom({ id: uid(), name: `${roomLabel(roomType)}${["salon", "cuisine", "couloir"].includes(roomType) && n === 1 ? "" : ` ${n}`}`, type: roomType, points: poly });
+      return true;
+    }
+
+    if (tool === "calibrate") {
+      if (!calib) setCalib(p);
+      else {
+        onCalibrate(calib, p);
+        setCalib(null);
+      }
+    }
+    return true;
+  };
+
+  /* Écran tactile : un doigt déplace la vue, un tap (doigt posé puis levé sans bouger) applique l'outil,
+     deux doigts zooment et déplacent. */
+  const touches = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ d: number; cx: number; cy: number; view: { s: number; ox: number; oy: number } } | null>(null);
+  const tap = useRef<{ id: number; x: number; y: number; p: Pt } | null>(null);
+  const touchUsed = useRef(false);
+  const fingers = () => {
+    const [a, b] = [...touches.current.values()];
+    const r = svgRef.current!.getBoundingClientRect();
+    return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, cx: (a.x + b.x) / 2 - r.left, cy: (a.y + b.y) / 2 - r.top };
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === "touch") {
+      touchUsed.current = true;
+      (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+      touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touches.current.size >= 2) {
+        // deux doigts : on oublie le geste à un doigt commencé
+        pinch.current = { ...fingers(), view };
+        tap.current = null;
+        pan.current = null;
+        setPanning(false);
+        setDrag(null);
+        return;
+      }
+      const p = toWorld(e.clientX, e.clientY);
+      if (tool === "select" && grabHandle(p)) return;
+      tap.current = { id: e.pointerId, x: e.clientX, y: e.clientY, p };
+      pan.current = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy };
+      return;
+    }
+    touchUsed.current = false;
+    if (e.button === 1 || e.button === 2 || space.current) {
+      pan.current = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy };
+      setPanning(true);
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+      return;
+    }
+    const p = toWorld(e.clientX, e.clientY);
+    if (tool === "select") {
+      if (grabHandle(p)) return;
+      // clic dans le vide : on déplace la vue
+      if (!act(p, e.detail)) {
         pan.current = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy };
         setPanning(true);
       }
       return;
     }
-
-    if (tool === "wall") {
-      const s = snap(p, chain).p;
-      if (!chain) return setChain(s);
-      if (dist(s, chain) < 0.05) return setChain(null);
-      addWalls([{ id: uid(), a: chain, b: s, thickness: wallThickness, height: wallHeight }]);
-      // on ferme la boucle si on revient sur un point existant de départ de chaîne
-      setChain(e.detail >= 2 ? null : s);
-      return;
-    }
-
-    if (openingPreview) {
-      const { w, t, width, kind } = openingPreview;
-      const clash = openings.some((o) => o.wallId === w.id && Math.abs(o.t - t) < (o.width + width) / 2);
-      if (clash) return onMessage("Il y a déjà une ouverture à cet endroit.");
-      const d = OPENING_DEFAULTS[kind];
-      const o: Opening = { id: uid(), wallId: w.id, kind, t, width, height: d.height, sill: d.sill };
-      addOpening(o);
-      return;
-    }
-
-    if (tool === "room") {
-      const poly = detectRoom(p, walls);
-      if (!poly) return onMessage("Zone non fermée : les murs doivent entourer complètement la pièce.");
-      const n = rooms.filter((r) => r.type === roomType).length + 1;
-      addRoom({ id: uid(), name: `${ROOM_LABELS[roomType]}${["salon", "cuisine", "couloir"].includes(roomType) && n === 1 ? "" : ` ${n}`}`, type: roomType, points: poly });
-      return;
-    }
-
-    if (tool === "calibrate") {
-      if (!calib) return setCalib(p);
-      onCalibrate(calib, p);
-      setCalib(null);
-    }
+    act(p, e.detail);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
+    if (e.pointerType === "touch") {
+      if (!touches.current.has(e.pointerId)) return;
+      touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const pc = pinch.current;
+      if (pc && touches.current.size >= 2) {
+        const f = fingers();
+        const s = Math.max(5, Math.min(400, (pc.view.s * f.d) / pc.d));
+        // le point du plan qui était sous les doigts suit leur centre
+        const wx = (pc.cx - pc.view.ox) / pc.view.s;
+        const wy = (pc.cy - pc.view.oy) / pc.view.s;
+        setView({ s, ox: f.cx - wx * s, oy: f.cy - wy * s });
+        return;
+      }
+      if (drag) {
+        setDrag({ ...drag, to: snap(toWorld(e.clientX, e.clientY), null).p });
+        return;
+      }
+      const t = tap.current;
+      if (t && t.id === e.pointerId) {
+        if (Math.hypot(e.clientX - t.x, e.clientY - t.y) < 8) return;
+        tap.current = null; // le doigt a bougé : ce n'est plus un tap mais un déplacement de la vue
+        setPanning(true);
+      }
+    }
     if (pan.current) {
       const pc = pan.current;
       setView((v) => ({ ...v, ox: pc.ox + e.clientX - pc.x, oy: pc.oy + e.clientY - pc.y }));
       return;
     }
+    if (e.pointerType === "touch") return;
     const p = toWorld(e.clientX, e.clientY);
     if (drag) {
       setDrag({ ...drag, to: snap(p, null).p });
@@ -261,7 +362,27 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
     setHover(tool === "wall" ? snap(p, chain).p : p);
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (e.pointerType === "touch") {
+      touches.current.delete(e.pointerId);
+      if (pinch.current) {
+        if (touches.current.size < 2) pinch.current = null;
+        // le doigt qui reste ne déclenche rien
+        pan.current = null;
+        setPanning(false);
+        return;
+      }
+      const t = tap.current;
+      tap.current = null;
+      if (t && t.id === e.pointerId && e.type === "pointerup") {
+        pan.current = null;
+        setPanning(false);
+        act(t.p, 1);
+        // le point touché sert d'aperçu (début du mur, ouverture…)
+        setHover(tool === "wall" ? snap(t.p, null).p : t.p);
+        return;
+      }
+    }
     pan.current = null;
     setPanning(false);
     if (drag) {
@@ -306,7 +427,8 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerLeave={() => setHover(null)}
+      onPointerCancel={onPointerUp}
+      onPointerLeave={(e) => e.pointerType !== "touch" && setHover(null)}
       onContextMenu={(e) => e.preventDefault()}
     >
       <defs>
@@ -356,7 +478,7 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
           return (
             <g key={`gs-${k}`} pointerEvents="none">
               <polygon points={fl.corners.map((p) => `${p.x},${p.y}`).join(" ")} fill="#2a2620" fillOpacity={0.08} stroke="#d9622b" strokeWidth={px(1.4)} strokeDasharray={`${px(6)} ${px(4)}`} />
-              <text x={fl.center.x} y={fl.center.y + px(4)} textAnchor="middle" fontSize={px(11)} fontWeight={600} fill="#d9622b">Trémie de l&apos;escalier</text>
+              <text x={fl.center.x} y={fl.center.y + px(4)} textAnchor="middle" fontSize={px(11)} fontWeight={600} fill="#d9622b">{tr("Trémie de l'escalier", "Stairwell opening")}</text>
             </g>
           );
         })}
@@ -451,8 +573,11 @@ export default function Editor2D({ tool, wallThickness, wallHeight, roomType, se
       </g>
 
       <text x={16} y={24} fontSize={12} fill="#6b6459">
-        {walls.length ? `${walls.length} murs · ${openings.length} ouvertures · ${rooms.length} pièces` : "Plan vide"}
-        {" · "}1 carreau = 1 m
+        {walls.length
+          ? tr(`${walls.length} murs · ${openings.length} ouvertures · ${rooms.length} pièces`, `${walls.length} walls · ${openings.length} openings · ${rooms.length} rooms`)
+          : tr("Plan vide", "Empty plan")}
+        {" · "}
+        {tr("1 carreau = 1 m", "1 square = 1 m")}
       </text>
       {hover && (
         <text x={16} y={42} fontSize={11} fill="#9a9284">

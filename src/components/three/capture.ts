@@ -9,6 +9,7 @@ import { type Tour, yawTowards } from "@/lib/tour";
 import { offsetPolygon, pointInPolygon, roomAnchor } from "@/lib/geometry";
 import { PITCH, TOUR_FOV, tourShot } from "@/lib/tourPlayer";
 import { GrayAPNG, grayPNG } from "@/lib/png";
+import { tx } from "@/lib/i18n";
 
 export const SHOT_FRAMES = 81; // 5 s à 16 images/s, la longueur que produit Wan 2.2
 export const SHOT_FPS = 16;
@@ -332,7 +333,7 @@ export function createCapture(get: () => RootState, bounds: () => THREE.Box3, to
       const { gl, scene } = get();
       const L = levels().find((l) => l.rooms.some((r) => r.id === roomId));
       const room = L?.rooms.find((r) => r.id === roomId);
-      if (!L || !room) throw new Error("Pièce introuvable.");
+      if (!L || !room) throw new Error(tx("Pièce introuvable.", "Room not found."));
       const wide = houseRange(bounds(), [new THREE.Vector3(roomAnchor(room).x, L.z + ROOM_EYE, roomAnchor(room).y)]);
       const { from, yaw } = bestRoomView(gl, scene, room, L.z, L.furniture, wide);
       // petite avancée dans le sens du regard, et panoramique lent de ~18°
@@ -389,7 +390,7 @@ export function createCapture(get: () => RootState, bounds: () => THREE.Box3, to
     async tourShot(stop, w, h, onProgress, lead = 2) {
       const { gl, scene } = get();
       const t = tour();
-      if (!t) throw new Error("Pas de visite guidée à filmer.");
+      if (!t) throw new Error(tx("Pas de visite guidée à filmer.", "No guided tour to film."));
       const cams = tourShot(t, stop, SHOT_FRAMES, SHOT_FPS, lead).map((p) => {
         const cam = new THREE.PerspectiveCamera(TOUR_FOV, w / h, 0.05, 500);
         cam.position.copy(p.position);

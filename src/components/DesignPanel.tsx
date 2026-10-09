@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { Copy, Map as MapIcon, MousePointerClick, RotateCcw, RotateCw, Trash2, Undo2 } from "lucide-react";
 import type { Project, Room } from "@/lib/types";
-import { ROOM_LABELS } from "@/lib/types";
+import { ROOM_LABELS, ROOM_LABELS_EN } from "@/lib/types";
 import { useProject } from "@/lib/store";
-import { CATALOG, furnitureLabel, type Furniture } from "@/lib/furnish";
+import { CATALOG, GROUP_EN, furnitureLabel, type Furniture } from "@/lib/furnish";
+import { useLang, useTr } from "@/lib/i18n";
 import { FLOOR_OPTIONS, WALL_COLORS, addF, duplicateF, removeF, resizeF, rotateF } from "@/lib/design";
 import { floorFor, styleById } from "@/lib/styles";
 import { fmtArea, polygonArea } from "@/lib/geometry";
@@ -75,6 +76,8 @@ export default function DesignPanel({
   setRoomId: (id: string | null) => void;
   onVisit: (r: Room) => void;
 }) {
+  const tr = useTr();
+  const en = useLang((s) => s.lang) === "en";
   const { commit, patch, updateRoom } = useProject.getState();
   const { rooms, background } = project;
   const style = styleById(project.styleId);
@@ -88,40 +91,51 @@ export default function DesignPanel({
   return (
     <>
       {background && (
-        <Section title="Plan d'origine">
-          <Switch on={!!project.planFloor} onChange={() => patch({ planFloor: !project.planFloor })} label="Dessin du plan au sol" />
+        <Section title={tr("Plan d'origine", "Original plan")}>
+          <Switch on={!!project.planFloor} onChange={() => patch({ planFloor: !project.planFloor })} label={tr("Dessin du plan au sol", "Plan drawing on the floor")} />
           <p className="text-xs leading-relaxed text-muted">
             {project.planFloor
-              ? "Le plan est plaqué au sol, à l'échelle : on retrouve en 3D tout ce qui y est dessiné (meubles, jardin, voiture…)."
-              : "Les sols prennent les matières choisies pour chaque pièce."}
+              ? tr(
+                  "Le plan est plaqué au sol, à l'échelle : on retrouve en 3D tout ce qui y est dessiné (meubles, jardin, voiture…).",
+                  "The plan is laid on the floor to scale: everything drawn on it shows up in 3D (furniture, garden, car…).",
+                )
+              : tr("Les sols prennent les matières choisies pour chaque pièce.", "Floors use the materials chosen for each room.")}
           </p>
         </Section>
       )}
 
       <Section
-        title={`Mobilier · ${furniture.length}`}
+        title={`${tr("Mobilier", "Furniture")} · ${furniture.length}`}
         right={
           custom && (
             <button
               onClick={() => {
-                if (!confirm("Revenir à l'ameublement automatique ? Les meubles placés à la main seront remplacés.")) return;
+                if (!confirm(tr("Revenir à l'ameublement automatique ? Les meubles placés à la main seront remplacés.", "Go back to automatic furnishing? Furniture you placed by hand will be replaced."))) return;
                 commit(() => ({ furniture: undefined }));
                 setSelectedId(null);
               }}
               className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft"
             >
-              <Undo2 className="size-3.5" /> Automatique
+              <Undo2 className="size-3.5" /> {tr("Automatique", "Automatic")}
             </button>
           )
         }
       >
         {custom ? (
-          <p className="text-xs leading-relaxed text-muted">Aménagement personnalisé. Cliquez un meuble dans la vue 3D pour le sélectionner, glissez-le pour le déplacer.</p>
+          <p className="text-xs leading-relaxed text-muted">
+            {tr(
+              "Aménagement personnalisé. Cliquez un meuble dans la vue 3D pour le sélectionner, glissez-le pour le déplacer.",
+              "Custom layout. Click a piece of furniture in the 3D view to select it, drag it to move it.",
+            )}
+          </p>
         ) : (
           <>
-            <Switch on={project.furnished} onChange={() => patch({ furnished: !project.furnished })} label="Meubler automatiquement" />
+            <Switch on={project.furnished} onChange={() => patch({ furnished: !project.furnished })} label={tr("Meubler automatiquement", "Furnish automatically")} />
             <p className="text-xs leading-relaxed text-muted">
-              Meubles placés selon le type de chaque pièce. Cliquez-en un dans la vue 3D pour le déplacer : l&apos;aménagement devient le vôtre.
+              {tr(
+                "Meubles placés selon le type de chaque pièce. Cliquez-en un dans la vue 3D pour le déplacer : l'aménagement devient le vôtre.",
+                "Furniture placed according to each room's type. Click one in the 3D view to move it: the layout becomes yours.",
+              )}
             </p>
           </>
         )}
@@ -129,7 +143,7 @@ export default function DesignPanel({
 
       {sel && (
         <Section
-          title={furnitureLabel(sel.kind)}
+          title={furnitureLabel(sel.kind, en)}
           right={
             <button
               onClick={() => {
@@ -137,14 +151,14 @@ export default function DesignPanel({
                 setSelectedId(null);
               }}
               className="rounded-lg p-1.5 text-muted hover:bg-accent-soft hover:text-accent"
-              title="Supprimer (Suppr)"
+              title={tr("Supprimer (Suppr)", "Delete (Del)")}
             >
               <Trash2 className="size-4" />
             </button>
           }
         >
           <div className="flex gap-1.5">
-            <button onClick={() => edit((l) => rotateF(l, sel.id, Math.PI / 2))} className={`${chip} flex flex-1 items-center justify-center gap-1 bg-cream hover:bg-sand`} title="Tourner (R)">
+            <button onClick={() => edit((l) => rotateF(l, sel.id, Math.PI / 2))} className={`${chip} flex flex-1 items-center justify-center gap-1 bg-cream hover:bg-sand`} title={tr("Tourner (R)", "Rotate (R)")}>
               <RotateCcw className="size-3.5" /> 90°
             </button>
             <button onClick={() => edit((l) => rotateF(l, sel.id, -Math.PI / 2))} className={`${chip} flex flex-1 items-center justify-center gap-1 bg-cream hover:bg-sand`}>
@@ -160,31 +174,35 @@ export default function DesignPanel({
                 setSelectedId(id);
               }}
               className={`${chip} flex items-center justify-center gap-1 bg-cream hover:bg-sand`}
-              title="Dupliquer"
+              title={tr("Dupliquer", "Duplicate")}
             >
               <Copy className="size-3.5" />
             </button>
           </div>
           <div key={sel.id + sel.w + sel.d} className="flex gap-3">
-            <Size label="L" value={sel.w} onCommit={(w) => edit((l) => resizeF(l, sel.id, w, sel.d))} />
-            <Size label="P" value={sel.d} onCommit={(d) => edit((l) => resizeF(l, sel.id, sel.w, d))} />
+            <Size label={tr("L", "W")} value={sel.w} onCommit={(w) => edit((l) => resizeF(l, sel.id, w, sel.d))} />
+            <Size label={tr("P", "D")} value={sel.d} onCommit={(d) => edit((l) => resizeF(l, sel.id, sel.w, d))} />
           </div>
         </Section>
       )}
 
-      <Section title={room ? room.name : "Pièce"} right={room && <span className="text-xs tabular-nums text-muted">{fmtArea(Math.abs(polygonArea(room.points)))}</span>}>
+      <Section title={room ? room.name : tr("Pièce", "Room")} right={room && <span className="text-xs tabular-nums text-muted">{fmtArea(Math.abs(polygonArea(room.points)))}</span>}>
         {!room ? (
           <p className="flex items-start gap-2 text-sm leading-relaxed text-muted">
-            <MousePointerClick className="mt-0.5 size-4 shrink-0" /> Cliquez une pièce dans la vue 3D (ou dans la liste) pour choisir son sol, ses murs et y ajouter des meubles.
+            <MousePointerClick className="mt-0.5 size-4 shrink-0" />{" "}
+            {tr(
+              "Cliquez une pièce dans la vue 3D (ou dans la liste) pour choisir son sol, ses murs et y ajouter des meubles.",
+              "Click a room in the 3D view (or in the list) to choose its floor and walls and add furniture.",
+            )}
           </p>
         ) : (
           <>
             <div>
               <div className="mb-1.5 flex items-center justify-between text-xs font-medium text-muted">
-                <span>Sol</span>
+                <span>{tr("Sol", "Floor")}</span>
                 {room.finish?.floor && (
                   <button onClick={() => updateRoom(room.id, { finish: { ...room.finish, floor: undefined } })} className="text-accent hover:underline">
-                    style par défaut
+                    {tr("style par défaut", "use style default")}
                   </button>
                 )}
               </div>
@@ -202,7 +220,7 @@ export default function DesignPanel({
                           }}
                           className={`${chip} ${cur.kind === o.kind ? "bg-ink text-paper" : "bg-cream text-muted hover:text-ink"}`}
                         >
-                          {o.label}
+                          {en ? o.labelEn : o.label}
                         </button>
                       ))}
                     </div>
@@ -226,10 +244,10 @@ export default function DesignPanel({
             </div>
             <div>
               <div className="mb-1.5 flex items-center justify-between text-xs font-medium text-muted">
-                <span>Murs</span>
+                <span>{tr("Murs", "Walls")}</span>
                 {room.finish?.wall && (
                   <button onClick={() => updateRoom(room.id, { finish: { ...room.finish, wall: undefined } })} className="text-accent hover:underline">
-                    style par défaut
+                    {tr("style par défaut", "use style default")}
                   </button>
                 )}
               </div>
@@ -243,7 +261,7 @@ export default function DesignPanel({
                     title={c}
                   />
                 ))}
-                <label className="relative size-7 cursor-pointer overflow-hidden rounded-full ring-1 ring-line" title="Autre couleur">
+                <label className="relative size-7 cursor-pointer overflow-hidden rounded-full ring-1 ring-line" title={tr("Autre couleur", "Other colour")}>
                   <span className="absolute inset-0 bg-[conic-gradient(#e35,#fc3,#3c6,#39f,#a3f,#e35)]" />
                   <input
                     type="color"
@@ -255,11 +273,11 @@ export default function DesignPanel({
               </div>
             </div>
             <div>
-              <div className="mb-1.5 text-xs font-medium text-muted">Ajouter un meuble</div>
+              <div className="mb-1.5 text-xs font-medium text-muted">{tr("Ajouter un meuble", "Add furniture")}</div>
               <div className="mb-2 flex flex-wrap gap-1">
                 {groups.map((g) => (
                   <button key={g} onClick={() => setGroup(g)} className={`${chip} ${group === g ? "bg-ink text-paper" : "bg-cream text-muted hover:text-ink"}`}>
-                    {g}
+                    {en ? (GROUP_EN[g] ?? g) : g}
                   </button>
                 ))}
               </div>
@@ -274,7 +292,7 @@ export default function DesignPanel({
                     }}
                     className="rounded-xl bg-white px-3 py-2 text-left text-xs ring-1 ring-line transition hover:ring-accent"
                   >
-                    <div className="font-medium text-ink">{c.label}</div>
+                    <div className="font-medium text-ink">{en ? c.labelEn : c.label}</div>
                     <div className="tabular-nums text-muted">
                       {c.w.toFixed(2)} × {c.d.toFixed(2)} m
                     </div>
@@ -286,7 +304,7 @@ export default function DesignPanel({
         )}
       </Section>
 
-      <Section title={`Pièces · ${rooms.length}`}>
+      <Section title={`${tr("Pièces", "Rooms")} · ${rooms.length}`}>
         <ul className="space-y-1.5">
           {rooms.map((r) => (
             <li key={r.id}>
@@ -296,22 +314,22 @@ export default function DesignPanel({
                 <button onClick={() => setRoomId(r.id)} className="min-w-0 flex-1 text-left">
                   <div className="truncate text-sm font-medium">{r.name}</div>
                   <div className="text-xs text-muted">
-                    {ROOM_LABELS[r.type]} · {fmtArea(Math.abs(polygonArea(r.points)))}
+                    {tr(ROOM_LABELS[r.type], ROOM_LABELS_EN[r.type])} · {fmtArea(Math.abs(polygonArea(r.points)))}
                   </div>
                 </button>
                 <select
                   value={r.type}
                   onChange={(e) => updateRoom(r.id, { type: e.target.value as Room["type"] })}
                   className="w-24 rounded-lg border border-line bg-white px-1 py-0.5 text-xs outline-none"
-                  aria-label="Type de pièce"
+                  aria-label={tr("Type de pièce", "Room type")}
                 >
                   {Object.entries(ROOM_LABELS).map(([k, l]) => (
                     <option key={k} value={k}>
-                      {l}
+                      {en ? ROOM_LABELS_EN[k as Room["type"]] : l}
                     </option>
                   ))}
                 </select>
-                <button onClick={() => onVisit(r)} className="rounded-lg bg-cream p-1.5 text-muted hover:bg-sand hover:text-ink" title="Visiter">
+                <button onClick={() => onVisit(r)} className="rounded-lg bg-cream p-1.5 text-muted hover:bg-sand hover:text-ink" title={tr("Visiter", "Visit")}>
                   <MapIcon className="size-3.5" />
                 </button>
               </div>

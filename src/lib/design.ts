@@ -55,11 +55,11 @@ export function addF(list: Furniture[], kind: FurnitureKind, room: Room): [Furni
 
 /* palettes proposées pour les finitions */
 export const FLOOR_OPTIONS = [
-  { kind: "parquet", label: "Parquet", colors: ["#c9a77c", "#a87b4f", "#e0c9a6", "#6b4a33"] },
-  { kind: "carrelage", label: "Carrelage", colors: ["#e7e3dc", "#cfcac2", "#b9b4ab", "#8f8a82"] },
-  { kind: "beton", label: "Béton ciré", colors: ["#c7c3bc", "#a9a59e", "#8a8780"] },
-  { kind: "terre_cuite", label: "Terre cuite", colors: ["#c4693d", "#b0573a", "#d98b5f"] },
-  { kind: "pierre", label: "Pierre", colors: ["#d9cfbd", "#c2b59b", "#a89c86"] },
+  { kind: "parquet", label: "Parquet", labelEn: "Wood", colors: ["#c9a77c", "#a87b4f", "#e0c9a6", "#6b4a33"] },
+  { kind: "carrelage", label: "Carrelage", labelEn: "Tiles", colors: ["#e7e3dc", "#cfcac2", "#b9b4ab", "#8f8a82"] },
+  { kind: "beton", label: "Béton ciré", labelEn: "Polished concrete", colors: ["#c7c3bc", "#a9a59e", "#8a8780"] },
+  { kind: "terre_cuite", label: "Terre cuite", labelEn: "Terracotta", colors: ["#c4693d", "#b0573a", "#d98b5f"] },
+  { kind: "pierre", label: "Pierre", labelEn: "Stone", colors: ["#d9cfbd", "#c2b59b", "#a89c86"] },
 ] as const;
 
 export const WALL_COLORS = ["#f4f1ea", "#efe6d6", "#e8d9c4", "#d9b99b", "#c98b6b", "#b6c4b0", "#9fb4c7", "#e3c26b", "#2f3a4a"];

@@ -2,12 +2,15 @@ import type { Level, LevelContent, Project, Pt, Room, Wall } from "./types";
 import { uid } from "./types";
 import { add, mul, perp, pointAtWall, pointInPolygon, pointSegDist, roomAt, roomAnchor, wallDir, wallLength } from "./geometry";
 import { furnish, type Furniture } from "./furnish";
+import { tx } from "./i18n";
 
 /* Maisons à étages. Le niveau actif vit dans walls / openings / rooms / background / furniture du projet (tout l'éditeur
    travaille dessus sans rien savoir des étages) ; les autres niveaux sont rangés dans `levels[i].data`. */
 
 export const SLAB = 0.2; // épaisseur du plancher entre deux niveaux
 export const GROUND = "Rez-de-chaussée";
+/** nom du rez-de-chaussée d'une maison sans étage, dans la langue de l'interface */
+const ground = () => tx(GROUND, "Ground floor");
 
 export interface LevelView extends LevelContent {
   name: string;
@@ -22,7 +25,7 @@ const contentOf = (p: Project): LevelContent => ({
   furniture: p.furniture,
 });
 
-const levelList = (p: Project): Level[] => p.levels ?? [{ name: GROUND }];
+const levelList = (p: Project): Level[] => p.levels ?? [{ name: ground() }];
 const active = (p: Project) => Math.min(p.level ?? 0, levelList(p).length - 1);
 
 /** Tous les niveaux, du rez-de-chaussée au dernier. */
@@ -62,7 +65,7 @@ export function addLevel(p: Project): Partial<Project> {
   const top = all[all.length - 1];
   const walls = exteriorWalls(top.walls, top.rooms).map((w) => ({ ...w, id: uid() }));
   const n = all.length;
-  const list: Level[] = [...levelList(p), { name: n === 1 ? "Étage" : `Étage ${n}`, data: { walls, openings: [], rooms: [], background: null } }];
+  const list: Level[] = [...levelList(p), { name: n === 1 ? tx("Étage", "Upper floor") : tx(`Étage ${n}`, `Floor ${n}`), data: { walls, openings: [], rooms: [], background: null } }];
   return switchLevel({ ...p, levels: list }, n);
 }
 

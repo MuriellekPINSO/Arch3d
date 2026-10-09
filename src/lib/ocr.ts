@@ -102,8 +102,10 @@ const norm = (s: string) =>
     .replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9,.\- ]/g, "");
 
-/** vocabulaire des plans : forme du mot → nom affiché et type de pièce */
-const VOCAB: { words: string[]; name: string; type: RoomType }[] = [
+/** vocabulaire des plans : forme du mot → nom affiché et type de pièce.
+    `passage` : simple circulation (un « dégagement » trop grand est en fait un séjour ouvert) ;
+    `en` : mot d'un plan en anglais, la pièce garde alors un nom anglais. */
+const VOCAB: { words: string[]; name: string; type: RoomType; passage?: boolean; en?: boolean }[] = [
   { words: ["sejour", "salon", "living", "sejours"], name: "Séjour", type: "salon" },
   { words: ["chambre", "chbre", "ch"], name: "Chambre", type: "chambre" },
   { words: ["cuisine", "kitchenette"], name: "Cuisine", type: "cuisine" },
@@ -111,7 +113,7 @@ const VOCAB: { words: string[]; name: string; type: RoomType }[] = [
   { words: ["toil", "toilette", "toilettes", "wc"], name: "Toilettes", type: "wc" },
   { words: ["sas"], name: "SAS", type: "couloir" },
   { words: ["hall", "entree", "accueil"], name: "Hall", type: "couloir" },
-  { words: ["degagement", "couloir", "circulation", "palier"], name: "Dégagement", type: "couloir" },
+  { words: ["degagement", "couloir", "circulation", "palier"], name: "Dégagement", type: "couloir", passage: true },
   { words: ["escalier", "escaliers"], name: "Escalier", type: "escalier" },
   { words: ["garage", "parking"], name: "Garage", type: "garage" },
   { words: ["terrasse", "balcon", "veranda", "loggia"], name: "Terrasse", type: "terrasse" },
@@ -119,6 +121,19 @@ const VOCAB: { words: string[]; name: string; type: RoomType }[] = [
   { words: ["bureau"], name: "Bureau", type: "bureau" },
   { words: ["magasin", "debarras", "buanderie", "rangement", "dressing", "cellier"], name: "Rangement", type: "autre" },
   { words: ["manger", "repas"], name: "Salle à manger", type: "salle_a_manger" },
+  // plans en anglais
+  { words: ["lounge"], name: "Living room", type: "salon", en: true },
+  { words: ["bedroom", "bedrooms", "bdrm"], name: "Bedroom", type: "chambre", en: true },
+  { words: ["kitchen"], name: "Kitchen", type: "cuisine", en: true },
+  { words: ["bathroom", "bath", "shower", "ensuite"], name: "Bathroom", type: "salle_de_bain", en: true },
+  { words: ["toilet", "restroom"], name: "Toilet", type: "wc", en: true },
+  { words: ["entrance", "entry", "foyer", "lobby"], name: "Entrance", type: "couloir", en: true },
+  { words: ["corridor", "hallway", "landing"], name: "Corridor", type: "couloir", passage: true, en: true },
+  { words: ["stairs", "staircase", "stair"], name: "Stairs", type: "escalier", en: true },
+  { words: ["terrace", "balcony", "porch", "deck"], name: "Terrace", type: "terrasse", en: true },
+  { words: ["office", "study"], name: "Office", type: "bureau", en: true },
+  { words: ["storage", "laundry", "pantry", "closet", "utility"], name: "Storage", type: "autre", en: true },
+  { words: ["dining"], name: "Dining room", type: "salle_a_manger", en: true },
 ];
 
 function lev(a: string, b: string) {
@@ -194,7 +209,7 @@ export function labelRooms(rooms: Room[], words: OcrWord[], toPlan: (p: Pt) => P
     if (area >= 1 && !merged && measured > 0.5) ratios.push(Math.sqrt(area / measured));
     if (!label) return r;
     // un « dégagement » de plus de 18 m² sans surface lisible est aussi un séjour ouvert (un hall, lui, peut être grand)
-    const bigPassage = label.v.name === "Dégagement" && area < 1 && measured >= 18;
+    const bigPassage = !!label.v.passage && area < 1 && measured >= 18;
     // ou une grande surface écrite loin du nom du dégagement (celle du séjour, dont le nom n'a pas été lu)
     const valueOf = (w: OcrWord) => {
       const mm = /^(\d{1,3})[,.](\d{1,2})/.exec(norm(w.text));
@@ -204,13 +219,14 @@ export function labelRooms(rooms: Room[], words: OcrWord[], toPlan: (p: Pt) => P
     const own = areaWords.slice().sort((a, b) => Math.hypot(a.c.x - lw.c.x, a.c.y - lw.c.y) - Math.hypot(b.c.x - lw.c.x, b.c.y - lw.c.y))[0];
     const otherBig = !!own && areaWords.some((w) => w !== own && valueOf(w) >= 8 && valueOf(w) > 2 * valueOf(own));
     // ou une surface écrite de séjour (12 m² et plus) pour un simple dégagement
-    const bigWritten = label.v.name === "Dégagement" && area >= 12;
+    const bigWritten = !!label.v.passage && area >= 12;
     if (((merged && label.v.type === "couloir") || bigPassage || bigWritten || (otherBig && label.v.type === "couloir")) && measured >= 12) {
       // seul le nom du couloir a été lu : le reste de la pièce est le séjour
       named++;
       namedIds.add(r.id);
-      count["Séjour"] = (count["Séjour"] ?? 0) + 1;
-      return { ...r, name: count["Séjour"]! > 1 ? `Séjour ${count["Séjour"]}` : "Séjour", type: "salon" as const };
+      const living = label.v.en ? "Living room" : "Séjour";
+      count[living] = (count[living] ?? 0) + 1;
+      return { ...r, name: count[living]! > 1 ? `${living} ${count[living]}` : living, type: "salon" as const };
     }
     named++;
     namedIds.add(r.id);
@@ -231,7 +247,7 @@ export function labelRooms(rooms: Room[], words: OcrWord[], toPlan: (p: Pt) => P
         num = String(k);
       }
       usedNums.add(num);
-      name = `Chambre ${num}`;
+      name = `${v.name} ${num}`;
     } else {
       count[v.name] = (count[v.name] ?? 0) + 1;
       if (count[v.name]! > 1) name = `${v.name} ${count[v.name]}`;

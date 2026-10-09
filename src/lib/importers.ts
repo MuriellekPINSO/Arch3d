@@ -1,6 +1,7 @@
 "use client";
 import type { Background, Opening, Pt, Room, RoomType, Wall } from "./types";
-import { OPENING_DEFAULTS, ROOM_LABELS, uid } from "./types";
+import { OPENING_DEFAULTS, uid } from "./types";
+import { roomLabel, tx } from "./i18n";
 import { bbox, openingSides, pointInPolygon, polygonArea } from "./geometry";
 import { pruneOutdoor, readPlanImage } from "./raster";
 import { detectAllRooms } from "./roomDetect";
@@ -64,15 +65,15 @@ export async function readPdf(file: File, pageNumber = 1): Promise<PlanImage & {
 }
 
 const KEYWORDS: [RegExp, RoomType][] = [
-  [/s[ée]jour|salon|living|^s[ée]j/i, "salon"],
+  [/s[ée]jour|salon|living|^s[ée]j|lounge|family room/i, "salon"],
   [/salle [àa] manger|repas|dining/i, "salle_a_manger"],
   [/cuisine|kitchen/i, "cuisine"],
-  [/\bwc\b|toilette/i, "wc"],
+  [/\bwc\b|toilette|toilet|restroom|powder room/i, "wc"],
   [/sdb|sde|salle d.?eau|salle de bain|bain|douche|bath/i, "salle_de_bain"],
   [/chambre|^ch\.?\s*\d|bedroom|suite/i, "chambre"],
-  [/bureau|office/i, "bureau"],
-  [/couloir|d[ée]gagement|hall|entr[ée]e|circulation|palier/i, "couloir"],
-  [/terrasse|balcon|v[ée]randa|loggia/i, "terrasse"],
+  [/bureau|office|study/i, "bureau"],
+  [/couloir|d[ée]gagement|hall|entr[ée]e|circulation|palier|corridor|entrance|entry|foyer|landing/i, "couloir"],
+  [/terrasse|balcon|v[ée]randa|loggia|terrace|porch|patio|deck/i, "terrasse"],
 ];
 
 const typeFromText = (t: string) => KEYWORDS.find(([re]) => re.test(t))?.[1] ?? null;
@@ -102,7 +103,7 @@ export function roomsFromPolygons(polys: Pt[][], texts: { p: Pt; text: string }[
     count[type] = (count[type] ?? 0) + 1;
     const n = count[type]!;
     const single = type === "salon" || type === "couloir";
-    return { id: uid(), name: single && n === 1 ? ROOM_LABELS[type] : `${ROOM_LABELS[type]} ${n}`, type, points };
+    return { id: uid(), name: single && n === 1 ? roomLabel(type) : `${roomLabel(type)} ${n}`, type, points };
   });
 }
 
@@ -171,14 +172,14 @@ function eraseWords(px: { data: Uint8ClampedArray; width: number; height: number
 export async function autoReadPlan(bg: Background, wallHeight: number, onStep: (m: string) => void = () => {}) {
   const px = await imagePixels(bg.src);
   // le texte d'abord : il sert à nommer les pièces, et on l'efface avant de chercher les murs
-  onStep("Lecture des noms des pièces…");
+  onStep(tx("Lecture des noms des pièces…", "Reading room names…"));
   let words: OcrWord[] = [];
   try {
     words = await readWords(bg.src, px);
   } catch (e) {
     console.warn("OCR indisponible", e);
   }
-  onStep("Lecture des murs…");
+  onStep(tx("Lecture des murs…", "Reading walls…"));
   const res = readPlanImage(eraseWords(px, words), { metersPerPx: bg.calibrated ? bg.scale : undefined, origin: { x: bg.x, y: bg.y }, wallHeight });
   if (!res || res.walls.length < 3) return null;
   const toPx = (p: Pt) => ({ x: (p.x - bg.x) / res.metersPerPx, y: (p.y - bg.y) / res.metersPerPx });
@@ -192,7 +193,7 @@ export async function autoReadPlan(bg: Background, wallHeight: number, onStep: (
       const st = res.stairs.find((x) => pointInPolygon({ x: x.x, y: x.y }, r.points));
       return st ? { ...r, stairs: st, type: "escalier" as const } : r;
     });
-  rooms = withStairs(rooms).map((r) => (r.stairs ? { ...r, name: "Escalier" } : r));
+  rooms = withStairs(rooms).map((r) => (r.stairs ? { ...r, name: tx("Escalier", "Stairs") } : r));
   let walls = pr.walls;
   let openings = pr.openings;
   let mpp = res.metersPerPx;
@@ -207,7 +208,11 @@ export async function autoReadPlan(bg: Background, wallHeight: number, onStep: (
     // la plupart des pièces sont nommées : les autres ne gardent pas un type deviné (souvent faux)
     if (named >= rooms.length / 2) {
       let n = 0;
-      rooms = rooms.map((r) => (lab.namedIds.has(r.id) ? r : { ...r, name: `Pièce ${++n}`, type: "autre" as const }));
+      rooms = rooms.map((r) => {
+        if (lab.namedIds.has(r.id)) return r;
+        n++;
+        return { ...r, name: tx(`Pièce ${n}`, `Room ${n}`), type: "autre" as const };
+      });
     }
     if (lab.scale && res.estimated && Math.abs(lab.scale - 1) > 0.005) {
       // les surfaces écrites donnent la vraie échelle : on remet tout aux bonnes dimensions
@@ -230,7 +235,11 @@ export async function autoReadPlan(bg: Background, wallHeight: number, onStep: (
   // l'OCR a pu renommer la pièce (« Hall » quand l'escalier donne dans le hall) : l'escalier reste
   rooms = rooms.map((r) => {
     if (!r.stairs) return r;
-    const name = /escalier/i.test(r.name) ? r.name : r.name.startsWith("Pièce") ? "Escalier" : `${r.name} et escalier`;
+    const name = /escalier|stair/i.test(r.name)
+      ? r.name
+      : /^(Pièce|Room) \d+$/.test(r.name)
+        ? tx("Escalier", "Stairs")
+        : tx(`${r.name} et escalier`, `${r.name} and stairs`);
     return { ...r, name, type: "escalier" as const };
   });
   openings = fixInteriorOpenings(openings, walls, rooms, true);

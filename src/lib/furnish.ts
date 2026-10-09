@@ -424,33 +424,49 @@ export function furnish(rooms: Room[], walls: Wall[], openings: Opening[]): Furn
 }
 
 /* Catalogue du design d'espace : dimensions par défaut (m), regroupées par usage. */
-export const CATALOG: { kind: FurnitureKind; label: string; w: number; d: number; group: string }[] = [
-  { kind: "canape", label: "Canapé", w: 2.2, d: 0.95, group: "Salon" },
-  { kind: "fauteuil", label: "Fauteuil", w: 0.85, d: 0.85, group: "Salon" },
-  { kind: "table_basse", label: "Table basse", w: 1.1, d: 0.6, group: "Salon" },
-  { kind: "meuble_tv", label: "Meuble TV", w: 1.8, d: 0.45, group: "Salon" },
-  { kind: "tapis", label: "Tapis", w: 2.4, d: 1.7, group: "Salon" },
-  { kind: "lampadaire", label: "Lampadaire", w: 0.35, d: 0.35, group: "Salon" },
-  { kind: "lit_double", label: "Lit double", w: 1.6, d: 2.0, group: "Chambre" },
-  { kind: "lit_simple", label: "Lit simple", w: 0.9, d: 2.0, group: "Chambre" },
-  { kind: "chevet", label: "Chevet", w: 0.45, d: 0.4, group: "Chambre" },
-  { kind: "armoire", label: "Armoire", w: 1.6, d: 0.6, group: "Chambre" },
-  { kind: "table", label: "Table", w: 1.6, d: 0.9, group: "Repas" },
-  { kind: "chaise", label: "Chaise", w: 0.45, d: 0.48, group: "Repas" },
-  { kind: "plan_travail", label: "Plan de travail", w: 2.4, d: 0.62, group: "Cuisine" },
-  { kind: "ilot", label: "Îlot", w: 1.6, d: 0.9, group: "Cuisine" },
-  { kind: "frigo", label: "Réfrigérateur", w: 0.7, d: 0.68, group: "Cuisine" },
-  { kind: "douche", label: "Douche", w: 0.9, d: 0.9, group: "Salle d'eau" },
-  { kind: "baignoire", label: "Baignoire", w: 1.7, d: 0.75, group: "Salle d'eau" },
-  { kind: "vasque", label: "Vasque", w: 0.8, d: 0.48, group: "Salle d'eau" },
-  { kind: "wc", label: "WC", w: 0.4, d: 0.65, group: "Salle d'eau" },
-  { kind: "bureau", label: "Bureau", w: 1.4, d: 0.7, group: "Travail" },
-  { kind: "etagere", label: "Étagère", w: 1.2, d: 0.35, group: "Travail" },
-  { kind: "console", label: "Console", w: 1.0, d: 0.32, group: "Déco" },
-  { kind: "plante", label: "Plante", w: 0.5, d: 0.5, group: "Déco" },
-  { kind: "transat", label: "Transat", w: 0.7, d: 1.8, group: "Extérieur" },
-  { kind: "escalier", label: "Escalier", w: 3.0, d: 0.95, group: "Structure" },
-  { kind: "voiture", label: "Voiture", w: 1.8, d: 4.4, group: "Extérieur" },
+export const CATALOG: { kind: FurnitureKind; label: string; labelEn: string; w: number; d: number; group: string }[] = [
+  { kind: "canape", label: "Canapé", labelEn: "Sofa", w: 2.2, d: 0.95, group: "Salon" },
+  { kind: "fauteuil", label: "Fauteuil", labelEn: "Armchair", w: 0.85, d: 0.85, group: "Salon" },
+  { kind: "table_basse", label: "Table basse", labelEn: "Coffee table", w: 1.1, d: 0.6, group: "Salon" },
+  { kind: "meuble_tv", label: "Meuble TV", labelEn: "TV unit", w: 1.8, d: 0.45, group: "Salon" },
+  { kind: "tapis", label: "Tapis", labelEn: "Rug", w: 2.4, d: 1.7, group: "Salon" },
+  { kind: "lampadaire", label: "Lampadaire", labelEn: "Floor lamp", w: 0.35, d: 0.35, group: "Salon" },
+  { kind: "lit_double", label: "Lit double", labelEn: "Double bed", w: 1.6, d: 2.0, group: "Chambre" },
+  { kind: "lit_simple", label: "Lit simple", labelEn: "Single bed", w: 0.9, d: 2.0, group: "Chambre" },
+  { kind: "chevet", label: "Chevet", labelEn: "Bedside table", w: 0.45, d: 0.4, group: "Chambre" },
+  { kind: "armoire", label: "Armoire", labelEn: "Wardrobe", w: 1.6, d: 0.6, group: "Chambre" },
+  { kind: "table", label: "Table", labelEn: "Table", w: 1.6, d: 0.9, group: "Repas" },
+  { kind: "chaise", label: "Chaise", labelEn: "Chair", w: 0.45, d: 0.48, group: "Repas" },
+  { kind: "plan_travail", label: "Plan de travail", labelEn: "Worktop", w: 2.4, d: 0.62, group: "Cuisine" },
+  { kind: "ilot", label: "Îlot", labelEn: "Island", w: 1.6, d: 0.9, group: "Cuisine" },
+  { kind: "frigo", label: "Réfrigérateur", labelEn: "Fridge", w: 0.7, d: 0.68, group: "Cuisine" },
+  { kind: "douche", label: "Douche", labelEn: "Shower", w: 0.9, d: 0.9, group: "Salle d'eau" },
+  { kind: "baignoire", label: "Baignoire", labelEn: "Bathtub", w: 1.7, d: 0.75, group: "Salle d'eau" },
+  { kind: "vasque", label: "Vasque", labelEn: "Basin", w: 0.8, d: 0.48, group: "Salle d'eau" },
+  { kind: "wc", label: "WC", labelEn: "Toilet", w: 0.4, d: 0.65, group: "Salle d'eau" },
+  { kind: "bureau", label: "Bureau", labelEn: "Desk", w: 1.4, d: 0.7, group: "Travail" },
+  { kind: "etagere", label: "Étagère", labelEn: "Shelf", w: 1.2, d: 0.35, group: "Travail" },
+  { kind: "console", label: "Console", labelEn: "Console", w: 1.0, d: 0.32, group: "Déco" },
+  { kind: "plante", label: "Plante", labelEn: "Plant", w: 0.5, d: 0.5, group: "Déco" },
+  { kind: "transat", label: "Transat", labelEn: "Sun lounger", w: 0.7, d: 1.8, group: "Extérieur" },
+  { kind: "escalier", label: "Escalier", labelEn: "Stairs", w: 3.0, d: 0.95, group: "Structure" },
+  { kind: "voiture", label: "Voiture", labelEn: "Car", w: 1.8, d: 4.4, group: "Extérieur" },
 ];
 
-export const furnitureLabel = (k: FurnitureKind) => CATALOG.find((c) => c.kind === k)?.label ?? k;
+export const furnitureLabel = (k: FurnitureKind, en = false) => {
+  const c = CATALOG.find((x) => x.kind === k);
+  return (en ? c?.labelEn : c?.label) ?? k;
+};
+
+/** familles du catalogue, en anglais (la clé reste le nom français) */
+export const GROUP_EN: Record<string, string> = {
+  Salon: "Living",
+  Chambre: "Bedroom",
+  Repas: "Dining",
+  Cuisine: "Kitchen",
+  "Salle d'eau": "Bathroom",
+  Travail: "Work",
+  Déco: "Decor",
+  Extérieur: "Outdoor",
+  Structure: "Structure",
+};

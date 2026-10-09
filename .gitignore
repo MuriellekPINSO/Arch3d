@@ -45,3 +45,7 @@ scripts/runpod/sorties/
 
 # cache de langue de Tesseract (tests OCR en local)
 *.traineddata
+
+
+# journaux de l outil et des émulateurs Firebase
+*-debug.log
