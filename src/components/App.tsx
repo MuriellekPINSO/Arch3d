@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRight, Box, BrickWall, Check, Clapperboard, Sparkles, Columns2, Monitor, Smartphone, Square, DoorOpen, Download, FilePlus2, FolderOpen, Footprints, Glasses, Grid2x2,
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Hammer, House, Layers, Magnet, Maximize2, MousePointer2, PaintBucket, Pause, Play, Plus, Redo2, RotateCcw, Route, Ruler, Save, Scissors, Sofa,
-  Tag, Trash2, Undo2, Upload, WandSparkles, X, Ellipsis, ChevronUp, ChevronDown, Coins, LogOut, UserRound,
+  Tag, Trash2, Undo2, Upload, WandSparkles, X, Ellipsis, ChevronUp, ChevronDown, Coins, LogOut, UserRound, Cloud, CloudOff, Loader2, LayoutGrid,
 } from "lucide-react";
 import type { Background, OpeningKind, Project, Pt, Room, RoomType } from "@/lib/types";
 import { OPENING_DEFAULTS, OPENING_LABELS_EN, ROOM_LABELS, ROOM_LABELS_EN } from "@/lib/types";
@@ -19,6 +19,8 @@ import RenduIA from "./RenduIA";
 import Logo from "./Logo";
 import { BuyCredits } from "./Credits";
 import { AccountArea, LoginDialog, VerifyNotice } from "./Account";
+import MySpace from "./MySpace";
+import { markSaved, openProject, useAutosave } from "@/lib/cloud";
 import { useCredits } from "@/lib/creditsStore";
 import { FIREBASE_READY } from "@/lib/firebase";
 import type { CaptureAPI } from "./three/capture";
@@ -247,6 +249,7 @@ export default function App() {
   const user = useCredits((s) => s.user);
   const authReady = useCredits((s) => s.authReady);
   const accountsOn = FIREBASE_READY;
+  const saveStatus = useAutosave();
   const [sheet, setSheet] = useState(false); // panneau ouvert en bas d'écran (téléphone, tablette)
   // écran tactile, sans clavier : boutons pour avancer en visite libre
   const [coarse] = useState(() => typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches);
@@ -428,17 +431,19 @@ export default function App() {
   /* ----- fichiers ----- */
   const openFile = async (file: File) => {
     const name = file.name.toLowerCase();
+    const epoch = useProject.getState().epoch;
     try {
       if (name.endsWith(".json")) {
         const p = JSON.parse(await file.text()) as Project;
         if (!Array.isArray(p.walls)) throw new Error();
-        load({ ...EMPTY_PROJECT, ...p });
+        load({ ...EMPTY_PROJECT, ...p, id: undefined });
         setFitKey((k) => k + 1);
         return say(tr(`Projet « ${p.name} » ouvert.`, `Project “${p.name}” opened.`));
       }
       if (name.endsWith(".dxf")) {
         setBusy(tr("Lecture du DXF…", "Reading the DXF…"));
         const res = importDxf(await file.text(), height);
+        if (useProject.getState().epoch !== epoch) return;
         if (!res.walls.length)
           return say(
             tr(
@@ -480,6 +485,7 @@ export default function App() {
         setBusy(tr("Lecture du PDF…", "Reading the PDF…"));
         if (page !== 1) img = await readPdf(file, page);
       }
+      if (useProject.getState().epoch !== epoch) return;
       const bg: Background = { src: img.src, widthPx: img.w, heightPx: img.h, scale: 15 / img.w, x: 0, y: 0, opacity: 0.4 };
       setBackground(bg);
       if (level === 0) patch({ name: file.name.replace(/\.[^.]+$/, "") });
@@ -497,9 +503,12 @@ export default function App() {
   /** lecture automatique des murs, ouvertures et pièces sur l'image du plan */
   const readImagePlan = async (bg: Background) => {
     setBusy(tr("Lecture automatique du plan…", "Reading the plan automatically…"));
+    const epoch = useProject.getState().epoch;
     await new Promise((r) => setTimeout(r, 30)); // laisse le message s'afficher avant le calcul
     try {
       const res = await autoReadPlan(bg, height, setBusy);
+      // un autre projet a été ouvert pendant la lecture : ce résultat ne le concerne pas
+      if (useProject.getState().epoch !== epoch) return;
       if (!res) {
         setTool("calibrate");
         setFitKey((k) => k + 1);
@@ -751,6 +760,16 @@ export default function App() {
               className="w-36 truncate bg-transparent text-xs text-muted outline-none focus:text-ink lg:w-56"
               aria-label={tr("Nom du projet", "Project name")}
             />
+            {saveStatus !== "off" && saveStatus !== "waiting" && (
+              <div className={`flex items-center gap-1 text-[10px] ${saveStatus === "error" ? "text-accent" : "text-muted"}`}>
+                {saveStatus === "saving" ? <Loader2 className="size-3 animate-spin" /> : saveStatus === "error" ? <CloudOff className="size-3" /> : <Cloud className="size-3" />}
+                {saveStatus === "saving"
+                  ? tr("Enregistrement…", "Saving…")
+                  : saveStatus === "error"
+                    ? tr("Pas enregistré (hors ligne ?)", "Not saved (offline?)")
+                    : tr("Enregistré dans mon espace", "Saved to my space")}
+              </div>
+            )}
           </div>
         </div>
 
@@ -773,7 +792,6 @@ export default function App() {
           })}
         </nav>
 
-        <AccountArea className="max-sm:hidden" />
         <div className="hidden items-center gap-1 lg:flex">
           <LangToggle />
           <button onClick={undo} disabled={!canUndo} title={tr("Annuler (⌘Z)", "Undo (⌘Z)")} className={`${btn} px-2 text-ink hover:bg-cream disabled:opacity-30`}>
@@ -802,6 +820,8 @@ export default function App() {
         >
           {menu ? <X className="size-5" /> : <Ellipsis className="size-5" />}
         </button>
+        {/* le compte (solde et avatar) ferme l'en-tête, tout à droite */}
+        <AccountArea className="max-sm:hidden lg:ml-1 lg:border-l lg:border-line lg:pl-3" />
         {menu && (
           <>
             <div className="fixed inset-0 z-30 lg:hidden" onClick={() => setMenu(false)} />
@@ -813,6 +833,16 @@ export default function App() {
                     <>
                       <div className="truncate px-3 pt-1 text-xs text-muted">{user.email}</div>
                       <VerifyNotice />
+                      <button
+                        onClick={() => {
+                          setMenu(false);
+                          useCredits.getState().setSpaceOpen(true);
+                        }}
+                        className={menuItem}
+                      >
+                        <LayoutGrid className="size-4 text-ink" /> {tr("Mon espace", "My space")}
+                        <span className="ml-auto text-xs text-muted">{tr("mes projets", "my projects")}</span>
+                      </button>
                       <button
                         onClick={() => {
                           setMenu(false);
@@ -1038,6 +1068,15 @@ export default function App() {
                   </button>{" "}
                   {tr("(R+1 : escalier, mezzanine, terrasse).", "(two floors: stairs, mezzanine, terrace).")}
                 </p>
+                {user && (
+                  <button
+                    onClick={() => useCredits.getState().setSpaceOpen(true)}
+                    className="mt-3 flex w-full items-center gap-2 rounded-2xl bg-white px-4 py-3 text-left text-sm font-medium ring-1 ring-line transition hover:ring-sand"
+                  >
+                    <LayoutGrid className="size-4 text-accent" /> {tr("Reprendre un de mes projets", "Continue one of my projects")}
+                    <span className="ml-auto text-xs text-muted">{tr("Mon espace", "My space")}</span>
+                  </button>
+                )}
                 <p className="mt-2 text-xs text-muted">
                   {tr("Pas de plan sous la main ? Plans d'essai :", "No plan at hand? Test plans:")}{" "}
                   <a href="/exemples/maison-b.pdf" download className="font-medium text-ink underline decoration-sand underline-offset-2 hover:decoration-accent">PDF</a>
@@ -1764,6 +1803,26 @@ export default function App() {
       </div>
       <BuyCredits />
       <LoginDialog />
+      <MySpace
+        currentId={project.id}
+        onOpen={async (id) => {
+          const p = await openProject(id);
+          load(p);
+          markSaved(useProject.getState().project);
+          setSelected(null);
+          setSelectedF(null);
+          setTool("select");
+          setStep(p.walls.length || (p.levels?.length ?? 0) > 1 ? "3d" : "plan");
+          setFitKey((k) => k + 1);
+        }}
+        onNew={() => {
+          load(EMPTY_PROJECT);
+          setStep("plan");
+          setTool("select");
+          setSelected(null);
+          setFitKey((k) => k + 1);
+        }}
+      />
     </div>
   );
 }

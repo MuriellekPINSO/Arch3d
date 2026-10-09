@@ -4,7 +4,7 @@ import { useState } from "react";
 import {
   createUserWithEmailAndPassword, GoogleAuthProvider, sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup,
 } from "firebase/auth";
-import { Coins, Loader2, LogOut, Mail, MailCheck, UserRound, X } from "lucide-react";
+import { Coins, LayoutGrid, Loader2, LogOut, Mail, MailCheck, UserRound, X } from "lucide-react";
 import { clientAuth, FIREBASE_READY } from "@/lib/firebase";
 import { useCredits } from "@/lib/creditsStore";
 import { useTr } from "@/lib/i18n";
@@ -31,7 +31,7 @@ function authError(code: string, tr: (fr: string, en: string) => string) {
 /** en-tête : solde et menu du compte, ou bouton de connexion */
 export function AccountArea({ className = "" }: { className?: string }) {
   const tr = useTr();
-  const { user, authReady, setLoginOpen, logout, setBuyOpen } = useCredits();
+  const { user, authReady, setLoginOpen, logout, setBuyOpen, setSpaceOpen } = useCredits();
   const [open, setOpen] = useState(false);
   if (!FIREBASE_READY || !authReady) return null;
   if (!user)
@@ -61,6 +61,16 @@ export function AccountArea({ className = "" }: { className?: string }) {
               {user.name && <div className="truncate text-xs text-muted">{user.email}</div>}
             </div>
             <VerifyNotice />
+            <button
+              onClick={() => {
+                setOpen(false);
+                setSpaceOpen(true);
+              }}
+              className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium hover:bg-cream"
+            >
+              <LayoutGrid className="size-4 text-ink" /> {tr("Mon espace", "My space")}
+              <span className="ml-auto text-xs text-muted">{tr("mes projets", "my projects")}</span>
+            </button>
             <button
               onClick={() => {
                 setOpen(false);

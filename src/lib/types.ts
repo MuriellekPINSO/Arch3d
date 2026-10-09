@@ -85,6 +85,8 @@ export interface Level {
 }
 
 export interface Project {
+  /** identifiant du projet enregistré dans « Mon espace » (donné au premier enregistrement en ligne) */
+  id?: string;
   name: string;
   /* niveau actif (celui qu'on dessine et qu'on aménage) */
   walls: Wall[];

@@ -5,7 +5,7 @@ import { Coins, Loader2, ShieldCheck, X } from "lucide-react";
 import { useCredits } from "@/lib/creditsStore";
 import { authHeader } from "@/lib/firebase";
 import { useLang, useTr } from "@/lib/i18n";
-import { CLIP_COST, FREE_CREDITS, PACKS, PHOTO_COST, formatXof, type PackId } from "@/lib/offres";
+import { CLIP_COST, FREE_CREDITS, PACKS, PHOTO_COST, formatUsd, formatXof, type PackId } from "@/lib/offres";
 
 /** pastille du solde ; un clic ouvre l'achat */
 export function CreditsBadge({ className = "" }: { className?: string }) {
@@ -33,8 +33,12 @@ export function BuyCredits() {
   const [pack, setPack] = useState<PackId>("pro");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // devise affichée : FCFA en français, dollars en anglais, au choix ensuite
+  const [cur, setCur] = useState<"xof" | "usd" | null>(null);
   if (!buyOpen) return null;
   const L = (p: [string, string]) => (lang === "en" ? p[1] : p[0]);
+  const currency = cur ?? (lang === "en" ? "usd" : "xof");
+  const chosen = PACKS.find((p) => p.id === pack)!;
 
   const buy = async () => {
     setBusy(true);
@@ -68,7 +72,8 @@ export function BuyCredits() {
           <div>
             <h2 className="font-display text-2xl font-semibold tracking-tight">{tr("Acheter des crédits", "Buy credits")}</h2>
             <p className="mt-1 text-sm text-muted">
-              {tr("Solde actuel", "Current balance")} : <b className="text-ink tabular-nums">{credits ?? "…"}</b> {tr("crédits", "credits")}
+              {tr("Solde actuel : ", "Current balance: ")}
+              <b className="text-ink tabular-nums">{credits ?? "…"}</b> {tr("crédits", "credits")}
             </p>
           </div>
           <button onClick={() => setBuyOpen(false)} disabled={busy} className="rounded-full p-1.5 text-muted hover:bg-cream" aria-label={tr("Fermer", "Close")}>
@@ -76,7 +81,27 @@ export function BuyCredits() {
           </button>
         </div>
 
-        <div className="mt-5 grid gap-2 sm:grid-cols-3">
+        <div className="mt-4 flex justify-end">
+          <div className="flex rounded-full bg-cream p-0.5 text-xs font-semibold" role="group" aria-label={tr("Devise", "Currency")}>
+            {(
+              [
+                ["xof", "FCFA"],
+                ["usd", "$ USD"],
+              ] as const
+            ).map(([k, l]) => (
+              <button
+                key={k}
+                onClick={() => setCur(k)}
+                aria-pressed={currency === k}
+                className={`rounded-full px-3 py-1 transition ${currency === k ? "bg-ink text-paper" : "text-muted hover:text-ink"}`}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-2 grid gap-2 sm:grid-cols-3">
           {PACKS.map((p) => (
             <button
               key={p.id}
@@ -86,7 +111,8 @@ export function BuyCredits() {
               <div className="text-xs font-semibold uppercase tracking-wider text-muted">{L(p.name)}</div>
               <div className="mt-1 font-display text-2xl font-semibold tabular-nums">{p.credits}</div>
               <div className="text-xs text-muted">{tr("crédits", "credits")}</div>
-              <div className="mt-2 text-sm font-semibold">{formatXof(p.xof)}</div>
+              <div className="mt-2 text-base font-semibold tabular-nums">{currency === "usd" ? formatUsd(p.usd, lang) : formatXof(p.xof)}</div>
+              <div className="text-[11px] tabular-nums text-muted">{currency === "usd" ? formatXof(p.xof) : `≈ ${formatUsd(p.usd, lang)}`}</div>
               {p.note && <div className={`mt-0.5 text-[11px] ${p.best ? "text-accent" : "text-leaf"}`}>{L(p.note)}</div>}
             </button>
           ))}
@@ -108,11 +134,14 @@ export function BuyCredits() {
         >
           {busy ? <Loader2 className="size-5 animate-spin" /> : <ShieldCheck className="size-5" />}
           {payment
-            ? tr(`Payer ${formatXof(PACKS.find((p) => p.id === pack)!.xof)}`, `Pay ${formatXof(PACKS.find((p) => p.id === pack)!.xof)}`)
+            ? tr(`Payer ${formatXof(chosen.xof)} (≈ ${formatUsd(chosen.usd, lang)})`, `Pay ${formatUsd(chosen.usd, lang)} (${formatXof(chosen.xof)})`)
             : tr("Paiement bientôt disponible", "Payment coming soon")}
         </button>
         <p className="mt-2 text-center text-xs text-muted">
-          {tr("MTN MoMo, Moov Money, Celtiis ou carte bancaire, via FedaPay.", "MTN MoMo, Moov Money, Celtiis or bank card, via FedaPay.")}
+          {tr(
+            "MTN MoMo, Moov Money, Celtiis ou carte bancaire, via FedaPay. Le paiement se fait en FCFA : une carte en dollars ou en euros est convertie par votre banque.",
+            "MTN MoMo, Moov Money, Celtiis or bank card, via FedaPay. Payment is made in FCFA: a card in dollars or euros is converted by your bank.",
+          )}
           {payment && sandbox && <b className="ml-1 text-accent">{tr("Mode test : aucun vrai paiement.", "Test mode: no real payment.")}</b>}
         </p>
       </div>

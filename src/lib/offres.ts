@@ -6,13 +6,14 @@
 export const FREE_CREDITS = 20;
 
 export type PackId = "essai" | "pro" | "agence";
-export type Pack = { id: PackId; credits: number; xof: number; name: [string, string]; note?: [string, string]; best?: boolean };
+/** xof : prix payé (FedaPay encaisse en FCFA) ; usd : le même prix affiché en dollars, arrondi */
+export type Pack = { id: PackId; credits: number; xof: number; usd: number; name: [string, string]; note?: [string, string]; best?: boolean };
 
 // 1 crédit ≈ 30 FCFA (≈ 0,05 $) ; le pack Agence offre 100 crédits de plus
 export const PACKS: Pack[] = [
-  { id: "essai", credits: 60, xof: 2000, name: ["Essai", "Starter"] },
-  { id: "pro", credits: 200, xof: 6000, name: ["Pro", "Pro"], note: ["≈ 10 $ · le plus choisi", "≈ $10 · most popular"], best: true },
-  { id: "agence", credits: 700, xof: 18000, name: ["Agence", "Studio"], note: ["100 crédits offerts", "100 bonus credits"] },
+  { id: "essai", credits: 60, xof: 2000, usd: 3.5, name: ["Essai", "Starter"] },
+  { id: "pro", credits: 200, xof: 6000, usd: 10, name: ["Pro", "Pro"], note: ["le plus choisi", "most popular"], best: true },
+  { id: "agence", credits: 700, xof: 18000, usd: 30, name: ["Agence", "Studio"], note: ["100 crédits offerts", "100 bonus credits"] },
 ];
 
 export type Quality = "rapide" | "hd" | "max";
@@ -30,4 +31,9 @@ export function renderCost(mode: RenderMode, size: Quality = "hd", shots = 1) {
   return mode === "film" ? clip * Math.max(1, shots) : clip;
 }
 
-export const formatXof = (n: number) => `${n.toLocaleString("fr-FR").replace(/ | /g, " ")} FCFA`;
+export const formatXof = (n: number) => `${n.toLocaleString("fr-FR").replace(/[\u202f\u00a0]/g, " ")} FCFA`;
+/** 10 $ en français, $10 en anglais ; les centimes seulement s'il y en a */
+export const formatUsd = (n: number, lang: "fr" | "en") => {
+  const v = Number.isInteger(n) ? String(n) : n.toFixed(2);
+  return lang === "en" ? `$${v}` : `${v.replace(".", ",")} $`;
+};

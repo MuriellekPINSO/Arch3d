@@ -20,6 +20,8 @@ type Data = Pick<Project, "walls" | "openings" | "rooms" | "background" | "furni
 
 interface Store {
   project: Project;
+  /** change à chaque ouverture de projet : une lecture de plan encore en cours sait que son projet n'est plus là */
+  epoch: number;
   past: Data[];
   future: Data[];
   /** applique une modification et l'enregistre dans l'historique */
@@ -78,6 +80,7 @@ export const useProject = create<Store>()(
   persist(
     (set, get) => ({
       project: EMPTY_PROJECT,
+      epoch: 0,
       past: [],
       future: [],
       commit: (fn) =>
@@ -99,7 +102,7 @@ export const useProject = create<Store>()(
           if (!nxt) return s;
           return { future: s.future.slice(1), past: [...s.past, snapshot(s.project)], project: { ...s.project, ...nxt } };
         }),
-      load: (p) => set({ project: p, past: [], future: [] }),
+      load: (p) => set((s) => ({ project: p, past: [], future: [], epoch: s.epoch + 1 })),
       addWalls: (w) => get().commit((p) => ({ walls: [...p.walls, ...w] })),
       updateWall: (id, w) => get().commit((p) => ({ walls: p.walls.map((x) => (x.id === id ? { ...x, ...w } : x)) })),
       addOpening: (o) => get().commit((p) => ({ openings: [...p.openings, o] })),

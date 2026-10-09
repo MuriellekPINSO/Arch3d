@@ -18,6 +18,9 @@ type CreditsState = {
   sandbox: boolean;
   buyOpen: boolean;
   loginOpen: boolean;
+  /** « Mon espace » ouvert */
+  spaceOpen: boolean;
+  setSpaceOpen: (v: boolean) => void;
   setBuyOpen: (v: boolean) => void;
   setLoginOpen: (v: boolean) => void;
   setCredits: (n: number) => void;
@@ -39,6 +42,8 @@ export const useCredits = create<CreditsState>()((set, get) => ({
   sandbox: true,
   buyOpen: false,
   loginOpen: false,
+  spaceOpen: false,
+  setSpaceOpen: (spaceOpen) => (spaceOpen && !get().user ? set({ loginOpen: true }) : set({ spaceOpen })),
   setBuyOpen: (buyOpen) => {
     // acheter demande d'être connecté
     if (buyOpen && !get().user) return set({ loginOpen: true });
@@ -87,6 +92,6 @@ export const useCredits = create<CreditsState>()((set, get) => ({
   logout: async () => {
     const auth = clientAuth();
     if (auth) await signOut(auth);
-    set({ buyOpen: false });
+    set({ buyOpen: false, spaceOpen: false });
   },
 }));
