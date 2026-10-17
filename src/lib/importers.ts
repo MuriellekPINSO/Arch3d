@@ -120,6 +120,16 @@ export function fixInteriorOpenings(openings: Opening[], walls: Wall[], rooms: R
   });
 }
 
+/** Grande ouverture d'un garage vers l'extérieur : c'est le portail, pas une baie vitrée. */
+export function garageGates(openings: Opening[], walls: Wall[], rooms: Room[]): Opening[] {
+  return openings.map((o) => {
+    if (o.width < 2) return o;
+    const s = openingSides(o, walls, rooms);
+    const garage = s && [s.r1, s.r2].some((r) => r?.type === "garage") && (!s.r1 || !s.r2);
+    return garage ? { ...o, kind: "passage" as const, height: 2.4, sill: 0 } : o;
+  });
+}
+
 /** Pixels d'une image (data URL) */
 export async function imagePixels(src: string): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
   const img = new Image();
@@ -242,13 +252,6 @@ export async function autoReadPlan(bg: Background, wallHeight: number, onStep: (
         : tx(`${r.name} et escalier`, `${r.name} and stairs`);
     return { ...r, name, type: "escalier" as const };
   });
-  openings = fixInteriorOpenings(openings, walls, rooms, true);
-  // grande ouverture d'un garage vers l'extérieur : c'est le portail, pas une baie vitrée
-  openings = openings.map((o) => {
-    if (o.width < 2) return o;
-    const s = openingSides(o, walls, rooms);
-    const garage = s && [s.r1, s.r2].some((r) => r?.type === "garage") && (!s.r1 || !s.r2);
-    return garage ? { ...o, kind: "passage" as const, height: 2.4, sill: 0 } : o;
-  });
+  openings = garageGates(fixInteriorOpenings(openings, walls, rooms, true), walls, rooms);
   return { walls, openings, rooms, metersPerPx: mpp, estimated: scaleFrom === "murs", scaleFrom, named };
 }

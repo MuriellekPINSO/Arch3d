@@ -16,6 +16,10 @@ type CreditsState = {
   payment: boolean;
   /** mode test FedaPay : aucun vrai paiement */
   sandbox: boolean;
+  /** qui calcule les rendus : fal.ai ou le GPU ComfyUI (null : personne) */
+  renders: "fal" | "comfy" | null;
+  /** lecture des plans par l'IA disponible */
+  planAI: boolean;
   buyOpen: boolean;
   loginOpen: boolean;
   /** « Mon espace » ouvert */
@@ -40,6 +44,8 @@ export const useCredits = create<CreditsState>()((set, get) => ({
   accounts: false,
   payment: false,
   sandbox: true,
+  renders: null,
+  planAI: false,
   buyOpen: false,
   loginOpen: false,
   spaceOpen: false,
@@ -61,8 +67,10 @@ export const useCredits = create<CreditsState>()((set, get) => ({
           accounts: boolean;
           payment: boolean;
           sandbox: boolean;
+          renders: "fal" | "comfy" | null;
+          planAI: boolean;
         };
-        set({ credits: r.credits, accounts: r.accounts, payment: r.payment, sandbox: r.sandbox });
+        set({ credits: r.credits, accounts: r.accounts, payment: r.payment, sandbox: r.sandbox, renders: r.renders, planAI: r.planAI });
       } catch {
         /* hors ligne : on garde l'affichage précédent */
       } finally {

@@ -12,10 +12,11 @@ import { OPENING_DEFAULTS, OPENING_LABELS_EN, ROOM_LABELS, ROOM_LABELS_EN } from
 import { useLang, useTr } from "@/lib/i18n";
 import { EMPTY_PROJECT, useProject } from "@/lib/store";
 import { sampleDuplex, sampleProject } from "@/lib/sample";
-import { STYLES } from "@/lib/styles";
+import { STYLES, styleById } from "@/lib/styles";
 import { moveF, removeF, rotateF } from "@/lib/design";
 import DesignPanel from "./DesignPanel";
 import RenduIA from "./RenduIA";
+import { useRenderWatch, useRenders } from "@/lib/rendersStore";
 import Logo from "./Logo";
 import { BuyCredits } from "./Credits";
 import { AccountArea, LoginDialog, VerifyNotice } from "./Account";
@@ -27,8 +28,13 @@ import type { CaptureAPI } from "./three/capture";
 import { furnish } from "@/lib/furnish";
 import { buildTour, roomViewpoint, yawTowards } from "@/lib/tour";
 import {
-  activeLevel, addLevel, alignOffset, defaultStairs, houseLevels, removeLevel, renameLevel, switchLevel, translateActive,
+  activeLevel, addLevel, alignOffset, defaultStairs, houseLevels, placeLevels, removeLevel, renameLevel, switchLevel, translateActive,
 } from "@/lib/levels";
+import { aiReadPlan, type AiLevel } from "@/lib/aiPlan";
+import type { IdeaBrief } from "@/lib/idea";
+import { generatePlans } from "@/lib/ideaPlan";
+import IdeaWizard from "./IdeaWizard";
+import { IdeaPlans, IdeaDone, JourneyRibbon, JourneyStyle, type IdeaPlanCard } from "./IdeaJourney";
 import { buildDuration } from "./three/build";
 import { importDxf } from "@/lib/dxf";
 import { detectAllRooms } from "@/lib/roomDetect";
@@ -48,6 +54,8 @@ const Viewer3D = dynamic(() => import("./three/Viewer3D"), {
 });
 
 type Step = "plan" | "3d" | "interieur";
+
+const MAX_PLANS = 12; // niveaux lus d'un coup (pages d'un PDF, images choisies ensemble)
 
 const STEPS: { id: Step; label: string; en: string; icon: typeof House }[] = [
   { id: "plan", label: "Plan", en: "Plan", icon: Ruler },
@@ -273,6 +281,14 @@ export default function App() {
   const [calib, setCalib] = useState<{ a: Pt; b: Pt; value: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
+  /* ----- de l'idée à la maison : l'écran « Votre idée », les variantes, puis le parcours qui enchaîne les étapes ----- */
+  const [idea, setIdea] = useState<"wizard" | "plans" | "go" | "done" | null>(null);
+  const [ideaPlans, setIdeaPlans] = useState<IdeaPlanCard[] | null>(null);
+  // étape du parcours : 1 plan · 2 construction · 3 visite guidée · 4 intérieur · 5 fin
+  const [ideaStage, setIdeaStage] = useState(0);
+  const [ideaLast, setIdeaLast] = useState<{ text: string; brief: IdeaBrief } | null>(null);
+  const ideaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [mode, setMode] = useState<ViewMode>("maquette");
   const [cutaway, setCutaway] = useState(true);
   const [playing, setPlaying] = useState(true);
@@ -299,6 +315,13 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const say = useCallback((m: string) => setToast(m), []);
+  // rendus IA suivis en permanence : on prévient quand l'un d'eux est prêt, même panneau fermé
+  useRenderWatch((it) => {
+    if (aiOpen) return;
+    if (it.status === "done") say(it.kind === "photo" ? tr("Votre photo réaliste est prête : ouvrez « Rendu IA ».", "Your realistic photo is ready: open “AI render”.") : tr("Votre vidéo est prête : ouvrez « Rendu IA ».", "Your video is ready: open “AI render”."));
+    else if (it.status === "error") say(tr("Un rendu n'a pas abouti, vos crédits vous ont été rendus.", "A render did not complete, your credits were refunded."));
+  });
+  const renderBadge = useRenders((s) => (s.items.some((x) => x.fresh) ? "new" : s.items.some((x) => x.status !== "done" && x.status !== "error") ? "busy" : null));
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const back = q.get("paiement");
@@ -399,6 +422,7 @@ export default function App() {
   };
   useEffect(() => () => void (buildTimer.current && clearTimeout(buildTimer.current)), []);
 
+
   // raccourcis : annuler / rétablir, outils
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
@@ -429,6 +453,29 @@ export default function App() {
   }, [step, undo, redo, selectedF, furniture, commit]);
 
   /* ----- fichiers ----- */
+  /** plusieurs plans choisis ensemble (un par niveau) : l'IA les lit tous, dans l'ordre des noms de fichiers */
+  const openFiles = async (files: File[]) => {
+    const isPdf = (f: File) => /\.pdf$/i.test(f.name) || f.type === "application/pdf";
+    const plans = files.filter((f) => f.type.startsWith("image/") || isPdf(f)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    if (!useCredits.getState().planAI || plans.length < 2) return openFile(plans[0] ?? files[0]);
+    const epoch = useProject.getState().epoch;
+    try {
+      setBusy(tr("Chargement des plans…", "Loading the plans…"));
+      const imgs: { src: string; w: number; h: number }[] = [];
+      for (const f of plans.slice(0, MAX_PLANS)) imgs.push(isPdf(f) ? await readPdf(f) : await readImage(f));
+      if (useProject.getState().epoch !== epoch) return;
+      if (level === 0) patch({ name: plans[0].name.replace(/\.[^.]+$/, "") });
+      setStep("plan");
+      setSelected(null);
+      await readPlansAsLevels(imgs);
+    } catch (err) {
+      console.error(err);
+      say(tr("Impossible de lire ces fichiers.", "These files could not be read."));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const openFile = async (file: File) => {
     const name = file.name.toLowerCase();
     const epoch = useProject.getState().epoch;
@@ -474,8 +521,27 @@ export default function App() {
       let img: { src: string; w: number; h: number; pages?: number } = isPdf ? await readPdf(file) : await readImage(file);
       const pages = img.pages ?? 1;
       if (pages > 1) {
-        // un plan par page (rez-de-chaussée, étage…) : on demande laquelle
         setBusy(null);
+        // un plan par page (rez-de-chaussée, étage…) : l'IA les lit toutes, un niveau chacune
+        if (
+          useCredits.getState().planAI &&
+          confirm(
+            tr(
+              `Ce PDF a ${pages} pages. Importer chaque page comme un niveau, du plus bas au plus haut ?\n\nAnnuler pour n'importer qu'une seule page.`,
+              `This PDF has ${pages} pages. Import each page as a floor, lowest first?\n\nCancel to import a single page.`,
+            ),
+          )
+        ) {
+          setBusy(tr("Lecture du PDF…", "Reading the PDF…"));
+          const all = [img];
+          for (let i = 2; i <= Math.min(pages, MAX_PLANS); i++) all.push(await readPdf(file, i));
+          if (useProject.getState().epoch !== epoch) return;
+          if (level === 0) patch({ name: file.name.replace(/\.[^.]+$/, "") });
+          setStep("plan");
+          setSelected(null);
+          return await readPlansAsLevels(all);
+        }
+        // sinon on demande laquelle
         const ans = prompt(
           tr(`Ce PDF a ${pages} pages. Quelle page importer pour « ${house[level].name} » ?`, `This PDF has ${pages} pages. Which page should be imported for “${house[level].name}”?`),
           String(Math.min(level + 1, pages)),
@@ -500,12 +566,99 @@ export default function App() {
     }
   };
 
-  /** lecture automatique des murs, ouvertures et pièces sur l'image du plan */
+  /** plusieurs plans d'un coup (pages d'un PDF, images choisies ensemble) : un niveau chacun, lus par l'IA */
+  const readPlansAsLevels = async (images: { src: string; w: number; h: number }[]) => {
+    const epoch = useProject.getState().epoch;
+    const bgs: Background[] = images.map((img) => ({ src: img.src, widthPx: img.w, heightPx: img.h, scale: 15 / img.w, x: 0, y: 0, opacity: 0.4 }));
+    let done = 0;
+    const progress = () => setBusy(tr(`L'IA lit les plans : ${done} / ${bgs.length}… (environ une minute)`, `The AI is reading the plans: ${done} / ${bgs.length}… (about a minute)`));
+    progress();
+    // trois lectures à la fois
+    const results: Awaited<ReturnType<typeof aiReadPlan>>[] = new Array(bgs.length);
+    let next = 0;
+    await Promise.all(
+      [0, 1, 2].map(async () => {
+        while (next < bgs.length) {
+          const i = next++;
+          results[i] = await aiReadPlan(bgs[i], height);
+          done++;
+          progress();
+        }
+      }),
+    );
+    if (useProject.getState().epoch !== epoch) return;
+    const failed = results.filter((r) => !r.ok);
+    if (failed.some((r) => !r.ok && r.needLogin)) {
+      useCredits.getState().setLoginOpen(true);
+      return say(tr("Connectez-vous (c'est gratuit) pour que l'IA lise vos plans, puis importez-les à nouveau.", "Sign in (it's free) to let the AI read your plans, then import them again."));
+    }
+    const levels = results.flatMap((r) => (r.ok ? r.levels : []));
+    const first = failed[0];
+    if (!levels.length) return say(first && !first.ok ? first.error : tr("Aucun plan lu.", "No plan read."));
+    // numéros de niveau tous différents (Sous-sol, RDC, R+1…) : on les suit ; sinon l'ordre des pages
+    const ordered = new Set(levels.map((l) => l.levelNo)).size === levels.length ? [...levels].sort((a, b) => a.levelNo - b.levelNo) : levels;
+    placeAiLevels(ordered, failed.length ? tr(` ${failed.length} plan(s) n'ont pas pu être lus.`, ` ${failed.length} plan(s) could not be read.`) : "");
+  };
+
+  /** pose les niveaux lus par l'IA : sur le niveau actif, et au-dessus s'il y en a plusieurs */
+  const placeAiLevels = (levels: AiLevel[], note = "") => {
+    const content = (l: AiLevel) => ({ walls: l.walls, openings: l.openings, rooms: l.rooms, background: l.background, furniture: undefined });
+    if (levels.length === 1) {
+      commit(() => content(levels[0]));
+      if (activeLevel(useProject.getState().project) > 0) {
+        const d = alignOffset(useProject.getState().project);
+        if (d && Math.hypot(d.x, d.y) > 0.01) commit((p) => translateActive(p, d));
+      }
+    } else commit((p) => placeLevels(p, activeLevel(p), levels.map((l) => ({ name: l.name, content: content(l) }))));
+    // fidèle au plan : son dessin est plaqué au sol (meubles dessinés, jardin…), sans mobilier ajouté
+    patch({ planFloor: true, furnished: false });
+    setTool("select");
+    setSelected(null);
+    setFitKey((k) => k + 1);
+    const total = (f: (l: AiLevel) => number) => levels.reduce((n, l) => n + f(l), 0);
+    const count = (...k: string[]) => total((l) => l.openings.filter((o) => k.includes(o.kind)).length);
+    const walls = total((l) => l.walls.length);
+    const rooms = total((l) => l.rooms.length);
+    const from = levels.some((l) => l.scaleFrom === "estimee") ? "estimee" : levels.some((l) => l.scaleFrom === "portes") ? "portes" : levels[0].scaleFrom;
+    const scale = {
+      calibrage: "",
+      surfaces: tr(" Échelle réglée d'après les surfaces écrites sur le plan.", " Scale set from the areas written on the plan."),
+      echelle: tr(" Échelle réglée d'après l'échelle ou la cote dessinée sur le plan.", " Scale set from the scale bar or dimension drawn on the plan."),
+      portes: tr(" Échelle estimée d'après les portes : vérifiez-la avec l'outil Échelle.", " Scale estimated from the doors: check it with the Scale tool."),
+      estimee: tr(" Échelle estimée : vérifiez-la avec l'outil Échelle sur une cote connue.", " Estimated scale: check it with the Scale tool on a known dimension."),
+    }[from];
+    say(
+      (levels.length === 1
+        ? tr(
+            `Plan lu par l'IA : ${walls} murs, ${count("door")} portes, ${count("window", "baie")} fenêtres, ${rooms} pièces.`,
+            `Plan read by the AI: ${walls} walls, ${count("door")} doors, ${count("window", "baie")} windows, ${rooms} rooms.`,
+          )
+        : tr(
+            `${levels.length} niveaux lus par l'IA (${levels.map((l) => l.name).join(", ")}) : ${rooms} pièces, ${walls} murs.`,
+            `${levels.length} floors read by the AI (${levels.map((l) => l.name).join(", ")}): ${rooms} rooms, ${walls} walls.`,
+          )) +
+        scale +
+        note +
+        tr(" Vérifiez et complétez si besoin.", " Check and complete if needed."),
+    );
+  };
+
+  /** lecture automatique des murs, ouvertures et pièces sur l'image du plan : par l'IA, sinon sans IA */
   const readImagePlan = async (bg: Background) => {
     setBusy(tr("Lecture automatique du plan…", "Reading the plan automatically…"));
     const epoch = useProject.getState().epoch;
     await new Promise((r) => setTimeout(r, 30)); // laisse le message s'afficher avant le calcul
     try {
+      let note = "";
+      if (useCredits.getState().planAI) {
+        const ai = await aiReadPlan(bg, height, setBusy);
+        if (useProject.getState().epoch !== epoch) return;
+        if (ai.ok) return placeAiLevels(ai.levels);
+        if (ai.needLogin) {
+          useCredits.getState().setLoginOpen(true);
+          note = tr("Connectez-vous (c'est gratuit) pour que l'IA lise le plan, puis « Relire le plan ». En attendant, lecture simple : ", "Sign in (it's free) to let the AI read the plan, then “Read the plan again”. Meanwhile, basic reading: ");
+        } else note = `${ai.error} ${tr("Lecture simple à la place : ", "Basic reading instead: ")}`;
+      }
       const res = await autoReadPlan(bg, height, setBusy);
       // un autre projet a été ouvert pendant la lecture : ce résultat ne le concerne pas
       if (useProject.getState().epoch !== epoch) return;
@@ -513,6 +666,7 @@ export default function App() {
         setTool("calibrate");
         setFitKey((k) => k + 1);
         return say(
+          note +
           tr(
             "Je n'ai pas reconnu les murs sur cette image. Calibrez l'échelle sur une cote connue, puis tracez-les avec l'outil Mur.",
             "No walls were recognised on this image. Calibrate the scale on a known dimension, then draw them with the Wall tool.",
@@ -536,6 +690,7 @@ export default function App() {
       setTool("select");
       setFitKey((k) => k + 1);
       say(
+        note +
         tr(
           `Plan lu : ${res.walls.length} murs, ${count("door")} portes, ${count("window") + count("baie")} fenêtres, ${res.rooms.length} pièces`,
           `Plan read: ${res.walls.length} walls, ${count("door")} doors, ${count("window") + count("baie")} windows, ${res.rooms.length} rooms`,
@@ -675,6 +830,55 @@ export default function App() {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   };
 
+  /* ----- le parcours : chaque étape lance la fonction existante (construction, visite guidée, intérieur).
+     Appelé depuis des minuteries et des rappels de la 3D : on passe par une référence pour avoir l'état à jour. ----- */
+  const ideaGo = useRef<(n: number) => void>(() => {});
+  useEffect(() => {
+    ideaGo.current = (n: number) => {
+      if (ideaTimer.current) clearTimeout(ideaTimer.current);
+      ideaTimer.current = null;
+      onBuilt.current = null;
+      if (building && n > 2) builtDone(); // « Passer » pendant la construction
+      const later = (ms: number, next: number) => (ideaTimer.current = setTimeout(() => ideaGo.current(next), ms));
+      setIdeaStage(n);
+      if (n === 1) {
+        setStep("plan");
+        setTool("select");
+        setSelected(null);
+        setFitKey((k) => k + 1);
+        later(3500, 2);
+      } else if (n === 2) {
+        if (!hasWalls) return ideaGo.current(0);
+        lastBuilt.current = ""; // la maison se construit, même si une autre l'a fait avant elle
+        goto3d("3d");
+        onBuilt.current = () => ideaGo.current(3);
+      } else if (n === 3) {
+        if (!tour) return ideaGo.current(4);
+        setPlaying(true);
+        setStopIdx(-1);
+        setTourNonce((k) => k + 1);
+        setMode("guidee");
+        later(240_000, 4); // filet : la visite prévient à la fin
+      } else if (n === 4) {
+        goto3d("interieur");
+        later(6000, 5);
+      } else if (n === 5) {
+        setIdea("done");
+      } else {
+        setIdea(null);
+        setIdeaStage(0);
+      }
+    };
+  });
+  useEffect(() => () => void (ideaTimer.current && clearTimeout(ideaTimer.current)), []);
+  const ideaPhrase = [
+    "",
+    tr("Voici votre plan, dessiné par Xwé", "Here is your plan, drawn by Xwé"),
+    tr("Les murs montent…", "The walls are going up…"),
+    tr("Bienvenue chez vous : la visite commence", "Welcome home: the tour begins"),
+    tr(`Votre intérieur, style ${styleById(project.styleId).name}`, `Your interior, ${styleById(project.styleId).nameEn} style`),
+    "",
+  ];
   /** Filme la visite guidée ou la construction de la maison (le canvas 3D seul, sans l'interface) et télécharge la vidéo à la fin. */
   const startRecording = (format: "paysage" | "vertical", what: "visite" | "construction" = "visite") => {
     setRecMenu(false);
@@ -923,11 +1127,13 @@ export default function App() {
           ref={fileRef}
           type="file"
           hidden
+          multiple
           accept="image/*,.pdf,.dxf,.json,application/pdf"
           onChange={(e) => {
-            const f = e.target.files?.[0];
+            const fs = [...(e.target.files ?? [])];
             e.target.value = "";
-            if (f) openFile(f);
+            if (fs.length > 1) openFiles(fs);
+            else if (fs[0]) openFile(fs[0]);
           }}
         />
       </header>
@@ -1017,7 +1223,10 @@ export default function App() {
               roof={roof && mode === "maquette"}
               shotRef={shotRef}
               captureRef={captureRef}
-              onTourEnd={() => recorder.current && setTimeout(stopRecording, 800)}
+              onTourEnd={() => {
+                if (recorder.current) setTimeout(stopRecording, 800); // fin d'enregistrement vidéo
+                if (idea === "go" && ideaStage === 3) ideaGo.current(4); // fin de la visite du parcours
+              }}
             />
             </div>
             </div>
@@ -1054,6 +1263,20 @@ export default function App() {
                     <div className="mt-0.5 text-xs text-muted">{tr("3 chambres, 140 m²", "3 bedrooms, 140 m²")}</div>
                   </button>
                 </div>
+                {/* pas de plan, juste une idée : Xwé dessine la maison */}
+                <button
+                  onClick={() => setIdea("wizard")}
+                  className="group mt-3 flex w-full items-center gap-4 rounded-2xl bg-gradient-to-r from-accent-soft to-paper p-4 text-left ring-1 ring-[#efc6ae] transition hover:-translate-y-0.5"
+                >
+                  <span className="grid size-11 shrink-0 place-items-center rounded-full bg-accent text-white">
+                    <Sparkles className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium text-ink">{tr("Je n'ai qu'une idée", "I only have an idea")}</span>
+                    <span className="block text-xs text-muted">{tr("Décrivez-la : Xwé dessine le plan, construit la maison et vous la fait visiter", "Describe it: Xwé draws the plan, builds the house and gives you the tour")}</span>
+                  </span>
+                  <ArrowRight className="size-5 shrink-0 text-accent transition group-hover:translate-x-0.5" />
+                </button>
                 <p className="mt-4 text-sm text-muted">
                   {tr("Maison à étage ?", "Multi-storey house?")}{" "}
                   <button
@@ -1087,6 +1310,69 @@ export default function App() {
                 </p>
               </div>
             </div>
+          )}
+
+          {/* de l'idée à la maison : écran « Votre idée », puis les variantes */}
+          {welcome && idea === "wizard" && (
+            <IdeaWizard
+              initial={ideaLast}
+              onClose={() => setIdea(null)}
+              onNext={(brief, text) => {
+                setIdeaLast({ text, brief });
+                setIdeaPlans(null);
+                setIdea("plans");
+                // on laisse l'écran « Xwé dessine… » s'afficher, puis les plans arrivent
+                const t0 = Date.now();
+                setTimeout(() => {
+                  const plans = generatePlans(brief, lang);
+                  setTimeout(() => setIdeaPlans(plans), Math.max(0, 900 - (Date.now() - t0)));
+                }, 60);
+              }}
+            />
+          )}
+          {welcome && idea === "plans" && (
+            <IdeaPlans
+              plans={ideaPlans}
+              onBack={() => setIdea("wizard")}
+              onChoose={(i) => {
+                const chosen = ideaPlans?.[i];
+                if (!chosen) return;
+                load({ ...chosen.project, id: undefined });
+                setIdea("go");
+                ideaGo.current(1);
+              }}
+            />
+          )}
+
+          {/* le ruban du parcours, pendant que Xwé enchaîne les étapes */}
+          {idea === "go" && ideaStage >= 1 && ideaStage <= 4 && (
+            <>
+              <JourneyStyle />
+              <JourneyRibbon index={ideaStage} message={ideaPhrase[ideaStage]} onNext={() => ideaGo.current(ideaStage + 1)} onStop={() => ideaGo.current(0)} />
+            </>
+          )}
+          {idea === "done" && (
+            <IdeaDone
+              onClose={() => ideaGo.current(0)}
+              onAI={() => {
+                ideaGo.current(0);
+                setAiOpen(true);
+              }}
+              onFilm={() => {
+                ideaGo.current(0);
+                startRecording("paysage", "visite");
+              }}
+              onEditPlan={() => {
+                ideaGo.current(0);
+                setStep("plan");
+              }}
+              onAnother={() => {
+                ideaGo.current(0);
+                load(EMPTY_PROJECT);
+                setStep("plan");
+                setIdea("wizard");
+              }}
+            />
           )}
 
           {/* calibrage */}
@@ -1202,6 +1488,12 @@ export default function App() {
                   title={tr("Photo et vidéo réalistes", "Realistic photo and video")}
                 >
                   <Sparkles className="size-4" /> <span className="max-sm:hidden">{tr("Rendu IA", "AI render")}</span>
+                  {renderBadge && !aiOpen && (
+                    <span
+                      className={`size-2 rounded-full ${renderBadge === "new" ? "bg-leaf" : "animate-pulse bg-accent"}`}
+                      title={renderBadge === "new" ? tr("Un rendu est prêt", "A render is ready") : tr("Rendu en cours", "Render in progress")}
+                    />
+                  )}
                 </button>
                 <button
                   onClick={() => {
@@ -1825,4 +2117,11 @@ export default function App() {
       />
     </div>
   );
+}
+
+/* en développement seulement : les scripts de test lisent et vérifient le générateur dans la page */
+if (process.env.NODE_ENV !== "production" && typeof window !== "undefined") {
+  Promise.all([import("@/lib/idea"), import("@/lib/ideaPlan")]).then(([idea, plan]) => {
+    (window as unknown as { __xweIdea?: unknown }).__xweIdea = { parseIdea: idea.parseIdea, generatePlans: plan.generatePlans, checkPlan: plan.checkPlan };
+  });
 }

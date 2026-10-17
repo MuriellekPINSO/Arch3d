@@ -31,3 +31,16 @@ body {
   scrollbar-width: thin;
   scrollbar-color: #d6ccb8 transparent;
 }
+
+/* rendus IA : la vue 3D « se développe » pendant le calcul */
+@keyframes xwe-shimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+.xwe-shimmer {
+  background: linear-gradient(100deg, transparent 20%, rgb(255 255 255 / 0.5) 50%, transparent 80%);
+  animation: xwe-shimmer 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .xwe-shimmer { animation: none; }
+}

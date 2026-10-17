@@ -9,13 +9,15 @@ import { type Tour, yawTowards } from "@/lib/tour";
 import { offsetPolygon, pointInPolygon, roomAnchor } from "@/lib/geometry";
 import { PITCH, TOUR_FOV, tourShot } from "@/lib/tourPlayer";
 import { GrayAPNG, grayPNG } from "@/lib/png";
+import { GrayMP4 } from "@/lib/mp4";
 import { tx } from "@/lib/i18n";
 
 export const SHOT_FRAMES = 81; // 5 s à 16 images/s, la longueur que produit Wan 2.2
 export const SHOT_FPS = 16;
 
 export interface TourShot {
-  control: Blob; // profondeur, APNG de SHOT_FRAMES images
+  control: Blob; // profondeur, APNG de SHOT_FRAMES images (pour le pod ComfyUI)
+  video?: Blob; // la même profondeur en vidéo MP4 (pour fal.ai) ; absente si le navigateur ne sait pas encoder
   first: string; // première image en couleurs (data URL PNG)
   firstDepth: Blob; // profondeur de la première image (PNG)
 }
@@ -214,6 +216,7 @@ const nextFrame = () => new Promise((r) => setTimeout(r, 0));
 async function shoot(gl: THREE.WebGLRenderer, scene: THREE.Scene, cams: THREE.Camera[], w: number, h: number, wide: { near: number; far: number }, onProgress?: (done: number, total: number) => void): Promise<TourShot> {
   const dr = new DepthRenderer(gl, scene, w, h);
   const apng = new GrayAPNG(w, h, cams.length, SHOT_FPS);
+  const mp4 = await GrayMP4.create(w, h, SHOT_FPS);
   let first = "";
   let firstDepth: Blob | null = null;
   try {
@@ -226,13 +229,14 @@ async function shoot(gl: THREE.WebGLRenderer, scene: THREE.Scene, cams: THREE.Ca
         firstDepth = await grayPNG(gray, w, h);
       }
       await apng.add(gray);
+      await mp4?.add(gray);
       onProgress?.(i + 1, cams.length);
       await nextFrame();
     }
   } finally {
     dr.dispose();
   }
-  return { control: apng.blob(), first, firstDepth: firstDepth! };
+  return { control: apng.blob(), video: mp4 ? await mp4.finish() : undefined, first, firstDepth: firstDepth! };
 }
 
 const ROOM_FOV = 60; // vertical : ~90° en largeur au format 16:9, l'angle d'un photographe immobilier
@@ -400,6 +404,7 @@ export function createCapture(get: () => RootState, bounds: () => THREE.Box3, to
       });
       const dr = new DepthRenderer(gl, scene, w, h);
       const apng = new GrayAPNG(w, h, SHOT_FRAMES, SHOT_FPS);
+      const mp4 = await GrayMP4.create(w, h, SHOT_FPS);
       let first = "";
       let firstDepth: Blob | null = null;
       try {
@@ -412,13 +417,14 @@ export function createCapture(get: () => RootState, bounds: () => THREE.Box3, to
             firstDepth = await grayPNG(gray, w, h);
           }
           await apng.add(gray);
+          await mp4?.add(gray);
           onProgress?.(i + 1, cams.length);
           await nextFrame(); // laisse l'écran respirer
         }
       } finally {
         dr.dispose();
       }
-      return { control: apng.blob(), first, firstDepth: firstDepth! };
+      return { control: apng.blob(), video: mp4 ? await mp4.finish() : undefined, first, firstDepth: firstDepth! };
     },
   };
 }

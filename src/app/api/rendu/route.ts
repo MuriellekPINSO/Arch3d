@@ -19,8 +19,14 @@ import {
 import { accountFrom, grant, recordRender, refundRender, spend } from "@/lib/credits";
 import { renderCost, type Quality } from "@/lib/offres";
 import { ADMIN_READY } from "@/lib/firebaseAdmin";
+import { FAL_READY, isFalFile } from "@/lib/fal";
+import { startFal, stepFal, type FalShot } from "@/lib/falRender";
+import { falCost, reserve } from "@/lib/budget";
+import { FEDAPAY_SANDBOX } from "@/lib/fedapay";
 
-/* Rendu IA : POST lance un calcul sur le GPU (RunPod Serverless ou ComfyUI direct), GET ?id= donne son état. */
+/* Rendu IA : POST lance un calcul, GET ?id= donne son état.
+   Avec FAL_KEY, les calculs partent chez fal.ai (fichiers déjà déposés chez fal par le navigateur) ;
+   sinon sur le GPU (RunPod Serverless ou ComfyUI direct). */
 
 /** message dans la langue de l'interface (en-tête x-lang envoyé par le navigateur) */
 const say = (request: Request, fr: string, en: string) => (request.headers.get("x-lang") === "en" ? en : fr);
@@ -48,6 +54,7 @@ const dataURL = (s: string | undefined, types = "png|jpeg|webp") => {
 };
 
 export async function POST(request: Request) {
+  if (FAL_READY) return falPost(request);
   if (!CONFIGURED) return notConfigured(request);
   const body = (await request.json()) as {
     mode: "photo" | "video" | "visite" | "anime" | "film"; // anime : photo animée ; film : tous les plans bout à bout
@@ -106,6 +113,86 @@ export async function POST(request: Request) {
 }
 
 const MAX_SHOTS = 16;
+
+/** point de vue 3D d'une photo (nombres seulement), gardé pour l'animer plus tard */
+function poseOf(p: unknown) {
+  const v = p as { position?: unknown; quaternion?: unknown; fov?: unknown; aspect?: unknown; target?: unknown } | null;
+  const nums = (a: unknown, n: number) => Array.isArray(a) && a.length === n && a.every((x) => typeof x === "number" && Number.isFinite(x));
+  if (!v || !nums(v.position, 3) || !nums(v.quaternion, 4) || typeof v.fov !== "number" || typeof v.aspect !== "number") return undefined;
+  return { position: v.position, quaternion: v.quaternion, fov: v.fov, aspect: v.aspect, target: nums(v.target, 3) ? v.target : null };
+}
+
+/** Rendu chez fal.ai : le navigateur envoie les adresses des fichiers qu'il vient de déposer chez fal. */
+async function falPost(request: Request) {
+  const body = (await request.json().catch(() => null)) as {
+    mode?: string;
+    size?: Quality;
+    extra?: string;
+    shots?: FalShot[];
+    title?: string;
+    pose?: unknown;
+  } | null;
+  const mode = body?.mode;
+  const size: Quality = body?.size === "rapide" || body?.size === "max" ? body.size : "hd";
+  const shots = (body?.shots ?? []).slice(0, MAX_SHOTS).map((s) => ({
+    view: (["facade", "aerien", "interieur"] as const).includes(s.view) ? s.view : ("interieur" as const),
+    ...(isFalFile(s.image) ? { image: s.image } : {}),
+    ...(isFalFile(s.depth) ? { depth: s.depth } : {}),
+    ...(isFalFile(s.control) ? { control: s.control } : {}),
+    ...(isFalFile(s.photo) ? { photo: s.photo } : {}),
+  }));
+  if (mode === "video")
+    return Response.json(
+      { error: say(request, "Cette photo n'a pas de point de vue 3D : relancez une photo depuis la 3D pour l'animer.", "This photo has no 3D viewpoint: take a new photo from the 3D view to animate it.") },
+      { status: 400 },
+    );
+  const valid =
+    shots.length > 0 &&
+    (mode === "photo"
+      ? shots.length === 1 && !!shots[0].image
+      : mode === "anime"
+        ? shots.length === 1 && !!shots[0].photo && !!shots[0].control
+        : mode === "visite"
+          ? shots.length === 1 && !!shots[0].image && !!shots[0].depth && !!shots[0].control
+          : mode === "film" && shots.every((s) => s.image && s.depth && s.control));
+  if (!valid) return Response.json({ error: say(request, "Requête invalide.", "Invalid request.") }, { status: 400 });
+  // en ligne, tant que les paiements sont en mode test, pas de film complet : des crédits achetés avec de l'argent
+  // fictif ne doivent pas déclencher une dizaine de vidéos payées chez fal
+  if (mode === "film" && FEDAPAY_SANDBOX && process.env.VERCEL)
+    return Response.json(
+      { error: say(request, "Le film complet ouvrira avec les vrais paiements. En attendant : photos et vidéos d'une pièce.", "The full film opens with real payments. Meanwhile: photos and single-room videos.") },
+      { status: 403 },
+    );
+  const paid = await pay(request, renderCost(mode as "photo", size, shots.length), mode!);
+  if (paid instanceof Response) return paid;
+  // plafond de dépenses du jour chez fal : au-delà, on rend les crédits et on refuse
+  if (!(await reserve(falCost(mode as "photo", size, shots.length)))) {
+    if (paid.account) await grant(paid.account, paid.cost, "remboursement");
+    return Response.json(
+      {
+        error: say(request, "Le service de rendu a atteint sa limite du jour : réessayez demain (vos crédits n'ont pas été débités).", "The render service has reached its daily limit: try again tomorrow (your credits were not charged)."),
+        ...(paid.left !== null ? { credits: paid.left + paid.cost } : {}),
+      },
+      { status: 503 },
+    );
+  }
+  try {
+    const id = await startFal({
+      account: paid.account ?? "local",
+      cost: paid.cost,
+      mode: mode as "photo" | "anime" | "visite" | "film",
+      size,
+      extra: (body?.extra ?? "").trim().slice(0, 400),
+      shots,
+      title: typeof body?.title === "string" ? body.title.slice(0, 80) : undefined,
+      pose: poseOf(body?.pose),
+    });
+    return Response.json({ id, ...(paid.left !== null ? { credits: paid.left } : {}) });
+  } catch (e) {
+    if (paid.account) await grant(paid.account, paid.cost, "remboursement");
+    return Response.json({ error: `${say(request, "Rendu impossible : ", "Render failed: ")}${(e as Error).message}` }, { status: 502 });
+  }
+}
 
 /** retire le prix du rendu, ou répond 402 avec le solde s'il manque des crédits */
 async function pay(request: Request, cost: number, what: string): Promise<Response | { account: string | null; cost: number; left: number | null }> {
@@ -185,9 +272,19 @@ async function film(request: Request, body: { shots?: { image: string; depth: st
 }
 
 export async function GET(request: Request) {
-  if (!CONFIGURED) return notConfigured(request);
   const id = new URL(request.url).searchParams.get("id");
   if (!id || !/^[\w-]{8,80}$/.test(id)) return Response.json({ error: say(request, "id manquant", "missing id") }, { status: 400 });
+  if (id.startsWith("fal_") && FAL_READY && ADMIN_READY) {
+    try {
+      const st = await stepFal(id);
+      if (st.status === "error") await refundRender(id).catch(() => {});
+      return Response.json(st);
+    } catch (e) {
+      // coupure passagère : le calcul continue chez fal, le navigateur redemandera
+      return Response.json({ status: "running", files: [], warning: (e as Error).message });
+    }
+  }
+  if (!CONFIGURED) return notConfigured(request);
   try {
     const st = await renderState(id);
     if (st.status === "error" && ADMIN_READY) await refundRender(id).catch(() => {});

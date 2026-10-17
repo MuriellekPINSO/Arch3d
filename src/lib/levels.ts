@@ -88,22 +88,33 @@ export function renameLevel(p: Project, i: number, name: string): Partial<Projec
 
 const shift = (q: Pt, d: Pt) => ({ x: q.x + d.x, y: q.y + d.y });
 
-/** Déplace tout le niveau actif (murs, pièces, meubles, plan importé). */
-export function translateActive(p: Project, d: Pt): Partial<Project> {
+/** Déplace tout un niveau (murs, pièces, meubles, plan importé). */
+export function translateContent<T extends LevelContent>(c: T, d: Pt): T {
   return {
-    walls: p.walls.map((w) => ({ ...w, a: shift(w.a, d), b: shift(w.b, d) })),
-    rooms: p.rooms.map((r) => ({ ...r, points: r.points.map((q) => shift(q, d)), stairs: r.stairs && { ...r.stairs, ...shift(r.stairs, d) } })),
-    furniture: p.furniture?.map((f) => ({ ...f, ...shift(f, d) })),
-    background: p.background && { ...p.background, x: p.background.x + d.x, y: p.background.y + d.y },
+    ...c,
+    walls: c.walls.map((w) => ({ ...w, a: shift(w.a, d), b: shift(w.b, d) })),
+    rooms: c.rooms.map((r) => ({ ...r, points: r.points.map((q) => shift(q, d)), stairs: r.stairs && { ...r.stairs, ...shift(r.stairs, d) } })),
+    furniture: c.furniture?.map((f) => ({ ...f, ...shift(f, d) })),
+    background: c.background && { ...c.background, x: c.background.x + d.x, y: c.background.y + d.y },
   };
+}
+
+/** Déplace tout le niveau actif. */
+export function translateActive(p: Project, d: Pt): Partial<Project> {
+  const c = translateContent(contentOf(p), d);
+  return { walls: c.walls, rooms: c.rooms, furniture: c.furniture, background: c.background };
 }
 
 /** Décalage qui pose au mieux les façades du niveau actif sur celles du dessous (coins ou centres des emprises). */
 export function alignOffset(p: Project): Pt | null {
   const cur = active(p);
   if (cur === 0) return null;
-  const below = levelsOf(p)[cur - 1];
-  const mine = exteriorWalls(p.walls, p.rooms);
+  return offsetOnto(contentOf(p), levelsOf(p)[cur - 1]);
+}
+
+/** Décalage qui pose au mieux les façades d'un niveau sur celles d'un autre. */
+export function offsetOnto(level: LevelContent, below: LevelContent): Pt | null {
+  const mine = exteriorWalls(level.walls, level.rooms);
   const ref = exteriorWalls(below.walls, below.rooms);
   if (!mine.length || !ref.length) return null;
   const box = (ws: Wall[]) => {
@@ -113,7 +124,7 @@ export function alignOffset(p: Project): Pt | null {
   };
   const a = box(mine);
   const b = box(ref);
-  // écart des points de façade du niveau actif aux façades du dessous, après décalage
+  // écart des points de façade du niveau à ceux du dessous, après décalage
   const samples = mine.flatMap((w) => [0.1, 0.5, 0.9].map((t) => pointAtWall(w, wallLength(w) * t)));
   const score = (d: Pt) =>
     samples.reduce((s, q) => {
@@ -128,6 +139,25 @@ export function alignOffset(p: Project): Pt | null {
       if (!best || s < best.s - 1e-6) best = { d, s };
     }
   return best!.d;
+}
+
+/** Pose plusieurs niveaux lus d'un coup (feuille à plusieurs plans, PDF de plusieurs pages) à partir du niveau `start` :
+    ils remplacent ceux qui s'y trouvent ou s'ajoutent au-dessus, chacun calé sur celui du dessous. Le niveau `start` devient actif. */
+export function placeLevels(p: Project, start: number, items: { name: string; content: LevelContent }[]): Partial<Project> {
+  const all: { name: string; content: LevelContent }[] = levelsOf(p).map((l) => ({
+    name: l.name,
+    content: { walls: l.walls, openings: l.openings, rooms: l.rooms, background: l.background, furniture: l.furniture },
+  }));
+  items.forEach((it, k) => {
+    const i = start + k;
+    const below = all[i - 1]?.content;
+    const d = below ? offsetOnto(it.content, below) : null;
+    const content = d && Math.hypot(d.x, d.y) > 0.01 ? translateContent(it.content, d) : it.content;
+    all[i] = { name: it.name, content };
+  });
+  const levels: Level[] = all.map((l, i) => (i === start ? { name: l.name } : { name: l.name, data: l.content }));
+  const c = all[start].content;
+  return { levels: levels.length > 1 ? levels : undefined, level: levels.length > 1 ? start : undefined, ...c, furniture: c.furniture };
 }
 
 /* ---------- hauteurs et escaliers ---------- */
